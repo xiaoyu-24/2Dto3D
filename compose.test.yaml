@@ -1,0 +1,14 @@
+services:
+  tests:
+    image: drawing-platform-api:latest
+    command: ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
+    environment:
+      DB_HOST: mysql
+      DB_USER: root
+      DB_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}
+      M12_PDF: /fixtures/m12.pdf
+    volumes:
+      - ./backend:/app:ro
+      - ${M12_PDF_PATH:?Set M12_PDF_PATH to the real M12 PDF}:/fixtures/m12.pdf:ro
+    depends_on:
+      mysql: { condition: service_healthy }

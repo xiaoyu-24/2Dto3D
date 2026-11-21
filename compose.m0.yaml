@@ -1,0 +1,31 @@
+name: drawing-m0
+services:
+  cad:
+    build: ./m0/cad
+    platform: linux/amd64
+    user: '65534:65534'
+    network_mode: none
+    read_only: true
+    tmpfs: ['/tmp:mode=1777,size=256m']
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: 2
+    mem_limit: 2g
+    pids_limit: 128
+  harness:
+    build: ./m0/harness
+    platform: linux/amd64
+    user: '65534:65534'
+    network_mode: none
+    read_only: true
+    environment:
+      HOME: /run/dsh-native
+      TMPDIR: /run/dsh-native
+    tmpfs:
+      - /tmp:mode=1777,size=256m
+      - /run/dsh-native:exec,uid=65534,gid=65534,mode=0700,size=256m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: 2
+    mem_limit: 2g
+    pids_limit: 128

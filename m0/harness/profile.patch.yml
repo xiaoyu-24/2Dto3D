@@ -1,0 +1,17 @@
+- id: persistent-bash
+  disabled: true
+- id: persistent-pwsh
+  disabled: true
+- id: llm-retry
+  disabled: true
+- id: session-log-deepseek
+  disabled: true
+- insert:
+    - id: skill
+      name: '@deepseek-ai/dsh-skill'
+    - id: skill-filesystem
+      name: '@deepseek-ai/dsh-skill-filesystem'
+      config:
+        customSkillDirs: [/opt/probe/skills]
+    - id: tool-skill
+      name: '@deepseek-ai/dsh-tool-skill'

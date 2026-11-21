@@ -1,0 +1,64 @@
+# 第 2 步：登录、上传与后台任务验收
+
+验证日期：2026-11-20，以下时间均为北京时间（Asia/Shanghai）。本机 Docker Desktop Linux Engine 29.5.3 / Compose 5.1.4；数据库实测 MySQL 8.4.10、READ-COMMITTED、`max_allowed_packet=268435456`。最终浏览器验收全部使用 Microsoft Edge 157.0.4341.60，Playwright 显式指定 `--browser msedge --headed`，UA 含 `Edg/157.0.0.0`。
+
+## 真实 M12 样本
+
+- 文件：`D:/desktop/测试文件.pdf`，104504 字节，1 页。
+- 原文 SHA-256：`be06c0a72ba49f73275dcbe515893495b8baadfd1a1aa19579603e2be8a92d2c`。
+- Edge 浏览器验收：批次 #2、源记录 #2、文件任务 #2、队列项 #2。
+- 检查点 SHA-256：`73f381e1f0b51278a995fd12647da8759c768df3802b0aaf968845ed4f50ddb2`，2277 字节，提取文本 1477 字符。
+- 从数据库读回原文和检查点，重新计算 SHA-256，均与引用一致。原 PDF 只读挂载，不纳入 Git。
+
+## 命令与结果
+
+| 实际命令/检查 | 退出码 | 结果 |
+|---|---:|---|
+| `git status --short --branch` | 0 | 在 `codex/m0-linux-probes` 继续；保留已有实施方案修改和 M0 未跟踪文件 |
+| `docker compose config --quiet` | 首次 1，修正后 0 | 本次生成的 `.env` 最初换行格式有误，修正为每行一个键后通过；随机密码未写入源码 |
+| `npm install --package-lock-only`（frontend） | 0 | 生成前端依赖锁 |
+| `docker compose build` | 首次 1，修正后 0 | TypeScript 首次报 CSS 导入缺类型，加入 `vite/client` 类型声明后构建成功；`tsc --noEmit` 与 Vite 均通过 |
+| `docker compose up -d mysql` | 0 | 本项目独立数据库实例和持久卷启动健康 |
+| `docker compose -f compose.yaml -f compose.test.yaml run --rm tests` | 0 | 首轮 **14 passed**，5.50 秒；依赖锁定后复跑 **14 passed**，4.93 秒。真实 MySQL 随机临时库，未使用业务数据 |
+| `docker compose up -d api worker web` | 0 | Alembic 建库、初始账号/项目、API、Worker、网页启动成功 |
+| `alembic upgrade head` 两次（测试 fixture）；`docker compose start api` 触发已存在库迁移与初始化 | 0 | 空库创建和相同迁移重复执行均通过，已有账号和任务保留 |
+| Playwright CLI `open http://localhost:8080 --browser msedge --headed`、登录、选择真实 PDF、两次点击上传 | 0 | Edge 第一次“创建任务 #2”，第二次“复用任务 #2”；批次 #2 中数据库计数 source/task/stage 均为 1 |
+| `docker compose pause worker` → Edge `close` → `docker compose stop api` → `docker compose unpause worker` | 均 0 | Edge 和 API 均不运行时，Worker 完成任务 #2 并持久化检查点 |
+| `docker compose start api`；Playwright 新 Edge 浏览器登录 | 0 | 新会话可查看批次 #2、同一任务 #2，状态“解析完成 · 待读图”，1 页检查点可查看 |
+| Edge 桌面/390px 窄屏截图与页面宽度检查 | 0 | 接收、状态和检查点可见；窄屏无页面水平溢出，任务表格支持局部横向滚动 |
+| 数据库原文/检查点重算 SHA-256 | 0 | 原图字节与检查点均完整 |
+| `docker compose exec -T api python -m pip check` | 0 | `No broken requirements found` |
+| `git diff --check` | 0 | 已跟踪文件未引入空白错误；未提交或暂存文件 |
+
+测试有一条第三方弃用提示：Starlette 建议将 TestClient 的 `httpx` 迁至 `httpx2`，当前固定版本测试通过。首次匿名访问 `/api/me` 的 401 属于预期鉴权行为；页面正常进入登录表单。
+
+## 事务与权限回归覆盖
+
+14 项测试覆盖：提交回执后从独立连接读到完整原图/源记录/队列；6 路并发重复上传只有一个任务；分别在源记录、任务、队列、事件写入和提交时注入异常，HTTP 503 且原文/源记录/队列全部回滚；同键异内容 409；同名新内容独立任务；批次键幂等；登录/退出、跨项目读取和上传、只读成员写入拒绝；无效 PDF 和超限文件不入队；真实 M12 检查点；SKIP LOCKED、续租、过期接管、fence 隔离；损坏 PDF 失败后后续任务仍可处理。
+
+## 关闭浏览器后的时间证据
+
+为确定处理发生在浏览器关闭之后，先暂停本项目 Worker，完成 Edge 网页上传与重复上传，再关闭测试 Edge 并停止 API，最后恢复 Worker。首次预跑未显式指定 Edge，已按用户新增规则完整重跑；以下只使用 Edge 重跑证据。批次 #1 保留为早期预跑记录，不作为最终浏览器验收。
+
+| 事件 | 北京时间 | 证据 |
+|---|---|---|
+| 接收事件写入（回执前提交） | 17:19:40.836163 | `stage_event.accepted`，fence=0；该时间为事件写入时间，非精确 COMMIT 时刻 |
+| 第二次 Edge 网页上传 | 17:20:12 | 页面显示“已接收 · 复用任务 #2” |
+| Edge 进程关闭完成 | 17:20:33.3947988 | Playwright `close` 返回成功后记录宿主机 UTC 时间，再换算 +08:00 |
+| API 停止 | 17:20:34 前 | Compose 返回 Stopped，后续 `ps` 中 API 未运行 |
+| Worker 领取任务 | 17:20:34.151849 | 数据库 `stage_event.started`，fence=1 |
+| Worker 提交完成 | 17:20:34.354721 | 数据库 `stage_event.completed`，1 页，检查点指纹同上 |
+| 新 Edge 浏览器重新登录 | 17:21:17 | 页面恢复批次 #2，任务 #2 显示“解析完成 · 待读图” |
+
+原始 Edge 关闭时间：`output/playwright/edge-browser-closed.txt`。截图：`output/playwright/edge-reused.png`、`edge-completed.png`、`edge-mobile.png`；这些本地验收文件不纳入 Git。Worker 进程标识为 `e883271dc4c4:84fa6d1e-12cb-4bea-ba34-3edd5fb4d1f3`，完成时领取次数为 1。
+
+## 范围
+
+本次证据覆盖本机 Linux Compose 联调、网页与真实 MySQL。未进行模型视觉识图、尺寸解释、CAD 建模、HTML/STEP/报告发布、生产部署和完整 M3 故障矩阵。当前任务终点 `awaiting_read` 表示等待第 3 步识读；不得解释为三维成品已完成。没有调用供应商模型或产生模型费用。
+
+## 2026-11-21 API 容器换址回归
+
+- 在独立 Compose 项目 `drawing-step2-qa` 中用 `docker stop` 和 `docker start` 让 Worker 占用 API 的旧地址。`docker inspect` 确认 API 换址。旧配置在 API 已健康时仍连续返回 `502`。
+- 新配置通过 `docker exec drawing-step2-qa-web-1 nginx -t`（退出码 `0`）。API 从 `172.22.0.3` 换到 `172.22.0.5` 后，网页 `/api/health` 从 API 启动算起约 2.4 秒恢复 `200`，Nginx 容器 ID 和启动时间一致。
+- Playwright Edge 登录、查看原批次的任务 #2 和读取 `/api/tasks/2/events?after=0` 均通过。后端 Compose 回归 `14 passed`（退出码 `0`），仍有一条 Starlette 弃用提示。
+- 最终配置的全量镜像重建因 Docker Hub 连接超时退出 `1`。回归使用已经构建的 Nginx 1.28.3 前端镜像，以只读挂载加载最终配置。

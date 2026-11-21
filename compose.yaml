@@ -1,0 +1,53 @@
+name: drawing-platform
+x-backend: &backend
+  build: ./backend
+  environment: &backend-env
+    DB_HOST: mysql
+    DB_NAME: drawings
+    DB_USER: drawings
+    DB_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
+    COOKIE_SECURE: ${COOKIE_SECURE:-0}
+  init: true
+services:
+  mysql:
+    image: mysql:8.4
+    command: ["--max-allowed-packet=256M", "--character-set-server=utf8mb4", "--collation-server=utf8mb4_0900_ai_ci", "--default-time-zone=+00:00"]
+    environment:
+      MYSQL_DATABASE: drawings
+      MYSQL_USER: drawings
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}
+    volumes: ["mysql-data:/var/lib/mysql"]
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_ROOT_PASSWORD mysql -uroot -e 'SELECT 1'"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+    restart: unless-stopped
+  migrate:
+    <<: *backend
+    command: ["sh", "-ec", "alembic upgrade head && python -m app.bootstrap"]
+    environment:
+      <<: *backend-env
+      BOOTSTRAP_LOGIN: ${BOOTSTRAP_LOGIN:?Set BOOTSTRAP_LOGIN in .env}
+      BOOTSTRAP_PASSWORD: ${BOOTSTRAP_PASSWORD:?Set BOOTSTRAP_PASSWORD in .env}
+    depends_on:
+      mysql: { condition: service_healthy }
+  api:
+    <<: *backend
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    restart: unless-stopped
+  worker:
+    <<: *backend
+    command: ["python", "-m", "app.worker"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    restart: unless-stopped
+  web:
+    build: ./frontend
+    ports: ["127.0.0.1:${WEB_PORT:-8080}:80"]
+    depends_on: [api]
+    restart: unless-stopped
+volumes:
+  mysql-data:
