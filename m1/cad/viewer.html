@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'">
+<title>M12 首件 · 离线三维</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; color: #e5edf3; background: #101822; font: 15px/1.55 system-ui, sans-serif; }
+  header, main { max-width: 1440px; margin: auto; padding: 18px 24px; }
+  header { border-bottom: 1px solid #334458; }
+  h1 { font-size: clamp(19px, 3vw, 27px); margin: 0; }
+  h2 { margin: 0 0 8px; font-size: 16px; }
+  p { margin: 6px 0; }
+  small { color: #aebdca; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 270px; gap: 16px; }
+  section, aside { min-width: 0; background: #172331; border: 1px solid #334458; border-radius: 10px; padding: 14px; }
+  canvas { width: 100%; height: min(60vh, 680px); min-height: 300px; display: block; background: #101d2b; border-radius: 6px; cursor: grab; touch-action: none; }
+  canvas:active { cursor: grabbing; }
+  nav { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 10px; }
+  button { font: inherit; color: inherit; background: #24364a; border: 1px solid #455c73; border-radius: 5px; padding: 5px 10px; cursor: pointer; }
+  button[aria-pressed="true"] { color: #101822; background: #a8d6f2; border-color: #a8d6f2; }
+  label { display: flex; align-items: center; gap: 8px; margin: 5px 0; cursor: pointer; }
+  label span { width: 12px; height: 12px; border-radius: 3px; border: 1px solid #aebdca; }
+  details { margin-top: 12px; border-top: 1px solid #334458; padding-top: 10px; }
+  summary { cursor: pointer; }
+  code { overflow-wrap: anywhere; }
+  @media (max-width: 760px) { main { grid-template-columns: 1fr; } header, main { padding: 12px; } }
+</style>
+</head>
+<body>
+<header><h1 id="title"></h1><p>离线三维 · ENDE05 A0 · 单位 mm</p></header>
+<main>
+  <section aria-label="三维视图">
+    <nav aria-label="视角与缩放">
+      <button type="button" data-view="iso" aria-pressed="true">等轴测</button>
+      <button type="button" data-view="mating" aria-pressed="false">配合端 +Z</button>
+      <button type="button" data-view="terminal" aria-pressed="false">焊线端 −Z</button>
+      <button type="button" id="zoom-in" aria-label="放大">＋</button>
+      <button type="button" id="zoom-out" aria-label="缩小">−</button>
+    </nav>
+    <canvas id="model" aria-label="M12A04-03-301-M16 三维模型"></canvas>
+    <p id="status" role="status">正在加载模型</p>
+    <small>拖动旋转 · 滚轮缩放 · 勾选部件切换显隐</small>
+  </section>
+  <aside>
+    <h2>部件</h2><div id="parts"></div>
+    <p><small>螺母 D 分件展示，安装位置未定。触点按位置标识。</small></p>
+    <details><summary>试建依据与限制</summary><div id="trials"></div>
+      <p>面板开孔参考 Ø16.10 / 扁宽 13.60 mm（扁宽上偏差 +0.10 mm）。</p>
+      <p>螺纹采用名义螺旋。牙型公差、旋合和密封性能有待验证。</p>
+    </details>
+    <details><summary>几何指纹</summary><code id="geometry"></code></details>
+  </aside>
+</main>
+<script id="scene" type="application/json">/*__MODEL__*/</script>
+<script>
+const scene = JSON.parse(document.querySelector('#scene').textContent);
+const canvas = document.querySelector('#model');
+const status = document.querySelector('#status');
+document.querySelector('#title').textContent = `${scene.identity.version} / ${scene.identity.geometry_revision}`;
+document.querySelector('#geometry').textContent = scene.identity.geometry_sha256;
+for (const trial of Object.values(scene.trials)) {
+  const paragraph = document.createElement('p');
+  paragraph.textContent = `${trial.summary} ${trial.basis}`;
+  document.querySelector('#trials').append(paragraph);
+}
+
+function start() {
+  const gl = canvas.getContext('webgl2', {antialias: true, preserveDrawingBuffer: true});
+  if (!gl) throw new Error('当前浏览器无法启动 WebGL 2');
+  const program = gl.createProgram();
+  const vertex = `#version 300 es
+    in vec3 position;
+    uniform vec3 right, up, forward;
+    uniform vec2 scales;
+    out vec3 eye;
+    void main() {
+      vec3 local = position - vec3(13.0, 0.0, 11.0);
+      eye = vec3(dot(local, right), dot(local, up), dot(local, forward));
+      gl_Position = vec4(eye.xy * scales, eye.z / 90.0, 1.0);
+    }`;
+  const fragment = `#version 300 es
+    precision highp float;
+    in vec3 eye;
+    uniform vec3 color;
+    out vec4 pixel;
+    void main() {
+      vec3 normal = normalize(cross(dFdx(eye), dFdy(eye)));
+      float light = clamp(dot(normal, normalize(vec3(-0.45, 0.65, 1.0))), 0.0, 1.0);
+      float depth = mix(1.0, 0.56, smoothstep(-16.0, 18.0, eye.z));
+      pixel = vec4(color * (0.42 + 0.58 * light) * depth, 1.0);
+    }`;
+  for (const [kind, source] of [[gl.VERTEX_SHADER, vertex], [gl.FRAGMENT_SHADER, fragment]]) {
+    const shader = gl.createShader(kind);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader));
+    gl.attachShader(program, shader);
+  }
+  gl.linkProgram(program);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
+  gl.useProgram(program);
+  const position = gl.getAttribLocation(program, 'position');
+  const uniform = Object.fromEntries(['right', 'up', 'forward', 'scales', 'color']
+    .map(name => [name, gl.getUniformLocation(program, name)]));
+  gl.enableVertexAttribArray(position);
+  gl.enable(gl.DEPTH_TEST);
+  gl.clearColor(16 / 255, 29 / 255, 43 / 255, 1);
+
+  const presets = {iso: [0.59, -0.34], mating: [0, 0], terminal: [Math.PI, 0]};
+  const buttons = [...document.querySelectorAll('[data-view]')];
+  let [yaw, pitch] = presets.iso;
+  let zoom = 1;
+  let drag;
+  const parts = scene.parts.map(part => {
+    const buffer = gl.createBuffer();
+    const bytes = Uint8Array.from(atob(part.xyz), byte => byte.charCodeAt(0));
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(bytes.buffer), gl.STATIC_DRAW);
+    const color = [1, 3, 5].map(offset => parseInt(part.color.slice(offset, offset + 2), 16) / 255);
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = true;
+    checkbox.addEventListener('change', () => render());
+    const label = document.createElement('label');
+    const swatch = document.createElement('span');
+    swatch.style.backgroundColor = part.color;
+    label.append(checkbox, swatch, `${part.id} · ${part.name}`);
+    document.querySelector('#parts').append(label);
+    return {buffer, color, checkbox, vertices: part.triangles * 3};
+  });
+
+  function render() {
+    const ratio = Math.min(devicePixelRatio, 2);
+    const width = Math.round(canvas.clientWidth * ratio);
+    const height = Math.round(canvas.clientHeight * ratio);
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+    }
+    const scale = Math.min(width / 56, height / 38) * 2 * zoom;
+    gl.viewport(0, 0, width, height);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    const cosine = Math.cos(yaw), sine = Math.sin(yaw);
+    const vertical = Math.sin(pitch), level = Math.cos(pitch);
+    gl.uniform3f(uniform.right, cosine, 0, -sine);
+    gl.uniform3f(uniform.up, -vertical * sine, level, -vertical * cosine);
+    gl.uniform3f(uniform.forward, sine * level, vertical, cosine * level);
+    gl.uniform2f(uniform.scales, scale / width, scale / height);
+    const visible = parts.filter(part => part.checkbox.checked);
+    for (const part of visible) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, part.buffer);
+      gl.vertexAttribPointer(position, 3, gl.FLOAT, false, 0, 0);
+      gl.uniform3fv(uniform.color, part.color);
+      gl.drawArrays(gl.TRIANGLES, 0, part.vertices);
+    }
+    status.textContent = `${visible.length} / ${parts.length} 个部件可见`;
+  }
+
+  function changeZoom(factor) {
+    zoom = Math.max(0.45, Math.min(4, zoom * factor));
+    render();
+  }
+  for (const button of buttons) button.addEventListener('click', () => {
+    [yaw, pitch] = presets[button.dataset.view];
+    for (const preset of buttons) preset.setAttribute('aria-pressed', String(preset === button));
+    render();
+  });
+  document.querySelector('#zoom-in').addEventListener('click', () => changeZoom(1.25));
+  document.querySelector('#zoom-out').addEventListener('click', () => changeZoom(0.8));
+  canvas.addEventListener('wheel', event => {
+    event.preventDefault();
+    changeZoom(Math.exp(-event.deltaY * 0.0015));
+  }, {passive: false});
+  canvas.addEventListener('pointerdown', event => {
+    drag = [event.clientX, event.clientY];
+    canvas.setPointerCapture(event.pointerId);
+  });
+  canvas.addEventListener('pointermove', event => {
+    if (!drag) return;
+    yaw -= (event.clientX - drag[0]) * 0.009;
+    pitch = Math.max(-1.5, Math.min(1.5, pitch + (event.clientY - drag[1]) * 0.009));
+    drag = [event.clientX, event.clientY];
+    for (const button of buttons) button.setAttribute('aria-pressed', 'false');
+    render();
+  });
+  canvas.addEventListener('lostpointercapture', () => { drag = undefined; });
+  new ResizeObserver(render).observe(canvas);
+  render();
+}
+
+try {
+  start();
+} catch (error) {
+  status.textContent = error.message;
+  throw error;
+}
+</script>
+</body>
+</html>

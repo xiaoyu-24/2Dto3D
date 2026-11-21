@@ -14,7 +14,7 @@ from app.m1_acceptance import DRAWING, REVISION, TOTAL, VERSION, check_end_views
 from app.m1_sample import PART, SCOPE, SOURCE, annotate_reading, checked_blob, encode_json, render_evidence
 from app.queue import event, live_stage
 
-RESERVATION = {"probe": Decimal("2.0021"), "read": Decimal("2.0328")}
+RESERVATION = {"probe": Decimal("2.0021"), "read": Decimal("2.0328"), "cad_select": Decimal("2.0041")}
 END_IMAGE_NAMES = {"end_a": "mating", "end_b": "terminal"}
 
 
@@ -137,20 +137,25 @@ def save_read(stage, evidence, state, reason=None, images=None, final=True):
     return True
 
 
-def recorded_call(stage, project_id, route, phase, payload):
-    key = {"stage": stage["id"], "route": bytes.fromhex(route["route_id"]), "phase": phase}
+def recorded_call(stage, project_id, route, phase, payload, *, attempt=1):
+    key = {"stage": stage["id"], "route": bytes.fromhex(route["route_id"]), "phase": phase, "attempt": attempt}
     reserve = RESERVATION[phase]
     with engine.begin() as conn:
         if not live_stage(conn, stage):
             return {"error_type": "lease_lost"}
         previous = one(conn, """SELECT result FROM m1_call WHERE stage_id=:stage AND route_sha=:route
-            AND phase=:phase""", **key)
+            AND phase=:phase AND attempt=:attempt""", **key)
         if previous:
             return json.loads(previous["result"]) if previous["result"] is not None else {"error_type": "reconciliation_pending"}
-        if phase == "read":
-            previous_read = one(conn, "SELECT stage_id FROM m1_call WHERE stage_id=:stage AND phase='read' LIMIT 1",
-                                stage=stage["id"])
-            if previous_read:
+        if phase in ("read", "cad_select"):
+            previous_phase = one(conn, "SELECT stage_id FROM m1_call WHERE stage_id=:stage AND phase=:phase AND attempt=:attempt LIMIT 1", **key)
+            if previous_phase:
+                return {"error_type": "reconciliation_pending"}
+        if attempt == 2:
+            first = one(conn, "SELECT result FROM m1_call WHERE stage_id=:stage AND route_sha=:route AND phase=:phase AND attempt=1", **key)
+            audited = json.loads(first["result"]) if first and first["result"] else {}
+            if (not audited.get("request_id") or audited.get("http_status") != 200
+                    or audited.get("finish_reason") not in ("completed", "max-tokens")):
                 return {"error_type": "reconciliation_pending"}
         project = one(conn, "SELECT daily_budget_cny FROM project WHERE id=:id FOR UPDATE", id=project_id)
         task = one(conn, "SELECT budget_cny FROM product_task WHERE id=:id", id=stage["task_id"])
@@ -162,15 +167,16 @@ def recorded_call(stage, project_id, route, phase, payload):
         except InvalidOperation:
             return {"error_type": "budget_unavailable"}
         totals = one(conn, """SELECT
-            COALESCE(SUM(CASE WHEN stage_id=:stage THEN COALESCE(usage_ceiling_cny,reserved_cny) END),0) AS task_spend,
+            COALESCE(SUM(CASE WHEN q.task_id=:task THEN COALESCE(usage_ceiling_cny,reserved_cny) END),0) AS task_spend,
             COALESCE(SUM(CASE WHEN started_at>=UTC_DATE() OR usage_ceiling_cny IS NULL
                 THEN COALESCE(usage_ceiling_cny,reserved_cny) END),0) AS daily_spend
-            FROM m1_call WHERE project_id=:project""", stage=stage["id"], project=project_id)
+            FROM m1_call JOIN task_stage q ON q.id=m1_call.stage_id WHERE project_id=:project""",
+                     task=stage["task_id"], project=project_id)
         if (totals["task_spend"] + reserve > min(ceiling, task["budget_cny"])
                 or totals["daily_spend"] + reserve > project["daily_budget_cny"]):
             return {"error_type": "budget_unavailable"}
-        conn.execute(text("""INSERT INTO m1_call (stage_id,project_id,route_sha,phase,reserved_cny)
-            VALUES (:stage,:project,:route,:phase,:reserve)"""), {**key, "project": project_id, "reserve": reserve})
+        conn.execute(text("""INSERT INTO m1_call (stage_id,project_id,route_sha,phase,attempt,reserved_cny)
+            VALUES (:stage,:project,:route,:phase,:attempt,:reserve)"""), {**key, "project": project_id, "reserve": reserve})
 
     try:
         result = harness("/" + phase, route, payload)
@@ -184,7 +190,7 @@ def recorded_call(stage, project_id, route, phase, payload):
     result["usage_ceiling_cny"] = str(cost) if cost is not None else None
     with engine.begin() as conn:
         conn.execute(text("""UPDATE m1_call SET result=:result,usage_ceiling_cny=:cost
-            WHERE stage_id=:stage AND route_sha=:route AND phase=:phase AND result IS NULL"""),
+            WHERE stage_id=:stage AND route_sha=:route AND phase=:phase AND attempt=:attempt AND result IS NULL"""),
                      {**key, "result": encode_json(result).decode(), "cost": cost})
     return result
 
@@ -234,7 +240,7 @@ def read_stage(stage):
 
 
 def call_summaries(conn, stage_id):
-    return [{"phase": row["phase"], "reserved_cny": row["reserved_cny"], **{
+    return [{"phase": row["phase"], "attempt": row["attempt"], "reserved_cny": row["reserved_cny"], **{
         key: value for key, value in json.loads(row["result"] or "{}").items() if key not in ("response", "expected", "answer")
-    }} for row in rows(conn, """SELECT phase,reserved_cny,result FROM m1_call WHERE stage_id=:stage
+    }} for row in rows(conn, """SELECT phase,attempt,reserved_cny,result FROM m1_call WHERE stage_id=:stage
                                   ORDER BY started_at""", stage=stage_id)]

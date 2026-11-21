@@ -1,6 +1,7 @@
 name: drawing-m0
 services:
   cad:
+    image: drawing-m0-cad
     build: ./m0/cad
     platform: linux/amd64
     user: '65534:65534'

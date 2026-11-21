@@ -28,7 +28,7 @@ def create_batch(project_id: int, user_id: int, request_key: str):
     return dict(batch)
 
 
-def accept_file(batch_id: int, user_id: int, client_file_key: str, filename: str, body: bytes):
+def accept_file(batch_id: int, user_id: int, client_file_key: str, filename: str, body: bytes, workflow="m1"):
     if len(body) > MAX_PDF_BYTES:
         raise HTTPException(413, "PDF 不能超过 32 MiB")
     if not body.startswith(b"%PDF-"):
@@ -52,8 +52,9 @@ def accept_file(batch_id: int, user_id: int, client_file_key: str, filename: str
             put_bytes(conn, body)
             source_id = conn.execute(text("""INSERT INTO source_file
                 (batch_id,client_file_key,filename,sha,selection_json,state)
-                VALUES (:batch,:key,:filename,:sha,'{}','accepted')"""),
-                {"batch": batch_id, "key": client_file_key.encode(), "filename": filename, "sha": sha}).lastrowid
+                VALUES (:batch,:key,:filename,:sha,:selection,'accepted')"""),
+                {"batch": batch_id, "key": client_file_key.encode(), "filename": filename, "sha": sha,
+                 "selection": '{"workflow":"m2"}' if workflow == "m2" else '{}'}).lastrowid
             task_id = conn.execute(text("""INSERT INTO product_task (source_id,scope_key,state,budget_cny)
                 SELECT :source,'file','queued',p.version_budget_cny FROM project p WHERE p.id=:project"""),
                 {"source": source_id, "project": batch["project_id"]}).lastrowid

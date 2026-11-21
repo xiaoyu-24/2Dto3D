@@ -12,9 +12,10 @@ def event(conn, stage, kind, detail):
         {"id": stage["id"], "fence": stage["fence"], "kind": kind, "detail": json.dumps(detail)})
 
 
-def claim(owner: str):
+def claim(owner: str, *, cad=False):
+    stages = "'m2_cad'" if cad else "'pdf_extract','vision_read','m2_read','m2_prepare'"
     with engine.begin() as conn:
-        found = one(conn, """SELECT * FROM task_stage WHERE stage_name IN ('pdf_extract','vision_read') AND
+        found = one(conn, f"""SELECT * FROM task_stage WHERE stage_name IN ({stages}) AND
             ((state='ready' AND ready_at<=UTC_TIMESTAMP(6)) OR
              (state='running' AND lease_until<=UTC_TIMESTAMP(6)))
             ORDER BY ready_at,id LIMIT 1 FOR UPDATE SKIP LOCKED""")
@@ -22,12 +23,15 @@ def claim(owner: str):
             return None
         stage = dict(found)
         recovered = stage["state"] == "running"
-        stage.update(owner=owner.encode(), fence=stage["fence"] + 1)
+        stage.update(owner=owner.encode(), fence=stage["fence"] + 1, attempts=stage["attempts"] + 1)
         conn.execute(text("""UPDATE task_stage SET state='running',owner=:owner,fence=:fence,
             lease_until=DATE_ADD(UTC_TIMESTAMP(6), INTERVAL 90 SECOND),attempts=attempts+1
             WHERE id=:id"""), stage)
-        conn.execute(text("UPDATE product_task SET state=:state WHERE id=:id"),
-                     {"id": stage["task_id"], "state": "reading" if stage["stage_name"] == "vision_read" else "processing"})
+        if not cad:
+            conn.execute(text("UPDATE product_task SET state=:state WHERE id=:id"),
+                         {"id": stage["task_id"], "state": "reading" if stage["stage_name"] in ("vision_read", "m2_read") else "processing"})
+        else:
+            conn.execute(text("UPDATE product_task SET state='modeling' WHERE id=:id AND state<>'partial'"), {"id": stage["task_id"]})
         event(conn, stage, "reclaimed" if recovered else "started", {"owner": owner})
     return stage
 
@@ -62,4 +66,11 @@ def finish(stage, checkpoint=None, error=None):
         event(conn, stage, "completed" if error is None else "failed",
               {"output_sha256": output_sha.hex(), "page_count": checkpoint["page_count"]}
               if error is None else {"error": error})
+        if error is None:
+            from app.m2_work import enqueue, is_m2_source
+
+            if is_m2_source(conn, stage["task_id"]):
+                next_stage = enqueue(conn, stage["task_id"], "m2_read", output_sha)
+                conn.execute(text("UPDATE product_task SET state='read_queued' WHERE id=:id"), {"id": stage["task_id"]})
+                event(conn, next_stage, "shared_read_queued", {"checkpoint_sha256": output_sha.hex()})
     return True

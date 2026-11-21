@@ -13,7 +13,7 @@ from deepseek_harness import DeepSeekHarness
 
 ENDPOINT = "https://api.deepseek.com/anthropic"
 MODEL = "deepseek-flash"
-TOKEN_LIMITS = {"probe": 256, "read": 4096}
+TOKEN_LIMITS = {"probe": 256, "read": 4096, "cad_select": 512}
 
 
 def settings():
@@ -137,9 +137,9 @@ class Service(BaseHTTPRequestHandler):
             return
         if self.path == "/probe":
             self.respond(run_probe())
-        elif self.path == "/read":
+        elif self.path in ("/read", "/cad_select"):
             request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            self.respond(request_harness(request["prompt"], request["images"], "read"))
+            self.respond(request_harness(request["prompt"], request["images"], self.path[1:]))
         else:
             self.respond({}, 404)
 

@@ -5,10 +5,11 @@ export const m1Source = 'be06c0a72ba49f73275dcbe515893495b8baadfd1a1aa19579603e2
 export const m1States: Record<string, string> = {
   awaiting_read: '解析完成 · 待读图', read_queued: '等待真实读图', reading: '正在真实读图',
   read_pending: '真实读图待联调', needs_confirmation: '读图完成 · 建模依据待生成',
-  basis_recheck: '读图完成 · 端面待重新校验', basis_frozen: '建模依据已冻结',
+  basis_recheck: '读图完成 · 端面待重新校验', basis_frozen: '建模依据已冻结', published: '首件已发布',
 };
 
 const kinds: Record<string, string> = { drawing: '图纸标注', derived: '推导', trial: '试建值' };
+const deliveryLabels: Record<string, string> = { html: '下载离线 3D HTML', step: '下载 STEP', report: '下载验收报告' };
 type Region = { view: string; pdf_rect: number[]; pixel_rect: number[] };
 type Finding = { label: string; value: string; kind: string; regions: string[] };
 type Trial = { label: string; summary: string; basis: string; kind: string; regions: string[] };
@@ -25,6 +26,8 @@ type ReadingTask = {
   calls: { phase: string; passed?: boolean; request_id?: string; actual_model?: string; elapsed_ms?: number;
     usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number } }[];
   frozen: { version: string; basis_sha256: string; checklist_sha256: string } | null;
+  delivery: { version: string; geometry_revision: string; geometry_sha256: string;
+    files: Record<string, { filename: string; sha256: string; byte_count: number }> } | null;
 };
 
 export function M1Evidence({ taskId, canWrite }: { taskId: number; canWrite: boolean }) {
@@ -109,6 +112,14 @@ export function M1Evidence({ taskId, canWrite }: { taskId: number; canWrite: boo
     {result?.frozen && <div className="m1-frozen"><p><strong>已冻结 {result.frozen.version}</strong></p>
       <p><a href={`/api${path}/frozen/basis`}>下载建模依据</a> <code>{result.frozen.basis_sha256}</code></p>
       <p><a href={`/api${path}/frozen/checklist`}>下载独立验收清单</a> <code>{result.frozen.checklist_sha256}</code></p>
+    </div>}
+    {result?.delivery && <div className="m1-frozen">
+      <p><strong>已发布 {result.delivery.version} / {result.delivery.geometry_revision}</strong></p>
+      <p>几何 SHA-256 <code>{result.delivery.geometry_sha256}</code></p>
+      {Object.entries(result.delivery.files).map(([kind, file]) => <p key={kind}>
+        <a href={`/api${path}/delivery/${kind}`} download={file.filename}>{deliveryLabels[kind]}</a>
+        {' · '}{file.byte_count.toLocaleString()} 字节 <code>{file.sha256}</code>
+      </p>)}
     </div>}
   </section>;
 }

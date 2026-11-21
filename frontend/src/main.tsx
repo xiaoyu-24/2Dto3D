@@ -2,16 +2,20 @@ import { StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { api, ApiError } from './api';
 import { M1Evidence, m1States, m1Source } from './M1Evidence';
+import { M2Evidence, m2States } from './M2Evidence';
+import { Versions } from './Versions';
 import './style.css';
 
 type User = { id: number; login: string };
 type Project = { id: number; name: string; role: string };
 type BatchRef = { id: number; created_at: string };
-type TaskFile = { id: number; task_id: number; filename: string; sha256: string; state: string; error_text: string | null };
+type Progress = { task_id: number; state: string; stage_state: string; error_text: string | null };
+type Product = Progress & { part_number: string; version: string | null };
+type TaskFile = Progress & { id: number; filename: string; sha256: string; products: Product[] };
 type Batch = { id: number; files: TaskFile[] };
-type Task = { id: number; sha256: string; state: string; attempts: number; checkpoint: { page_count: number; pages: { number: number; rotation: number; text: string }[] } | null };
+type Task = { id: number; sha256: string; state: string; workflow: string | null; part_number: string | null; attempts: number; checkpoint: { page_count: number; pages: { number: number; rotation: number; text: string }[] } | null };
 type Receipt = { task_id: number; reused: boolean; message: string };
-const states: Record<string, string> = { queued: '等待处理', processing: '正在解析', failed: '解析失败', ...m1States };
+const states: Record<string, string> = { queued: '等待处理', processing: '正在处理', failed: '处理失败', ...m1States, ...m2States };
 
 function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -54,7 +58,9 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [selected, setSelected] = useState<File[]>([]);
   const storageKey = `drawing-batch:${user.id}:${projectId}`;
   const project = projects.find((p) => p.id === projectId);
-  const detailState = batch?.files.find((file) => file.task_id === detail?.id)?.state || detail?.state;
+  const canWrite = Boolean(project && project.role !== 'reader');
+  const jobs = batch?.files.flatMap((file) => [file, ...file.products]) || [];
+  const detailState = jobs.find((job) => job.task_id === detail?.id)?.state || detail?.state;
   function report(e: unknown) {
     if (e instanceof ApiError && e.status === 401) onLogout();
     else setError((e as Error).message);
@@ -112,7 +118,7 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
           if (file.size > 32 * 1024 * 1024) throw new Error('PDF 不能超过 32 MiB');
           const hash = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
           const key = Array.from(new Uint8Array(hash), (n) => n.toString(16).padStart(2, '0')).join('');
-          const data = new FormData(); data.append('client_file_key', key); data.append('file', file);
+          const data = new FormData(); data.append('client_file_key', key); data.append('file', file); data.append('workflow', 'm2');
           const receipt = await api<Receipt>(`/batches/${id}/files`, { method: 'POST', body: data });
           receipts.push(`${file.name}：${receipt.message} · ${receipt.reused ? '复用' : '创建'}任务 #${receipt.task_id}`);
         } catch (e) {
@@ -128,6 +134,21 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
   async function logout() {
     try { await api('/logout', { method: 'POST' }); onLogout(); } catch (e) { report(e); }
   }
+  function openTask(taskId: number) {
+    void api<Task>(`/tasks/${taskId}`).then(setDetail).catch(report);
+  }
+  async function retry(path: string) {
+    setError(''); setNotice('');
+    try {
+      const result = await api<{ retried: number[] }>(path, { method: 'POST' });
+      setNotice(result.retried.length ? `已重试任务 ${result.retried.map((id) => `#${id}`).join('、')}` : '没有待重试的失败项');
+      setBatch(await api<Batch>(`/batches/${batchId}`));
+    } catch (e) { report(e); }
+  }
+  function status(job: Progress) {
+    return <><span className={`status ${job.state}`}>{states[job.state] || job.state}</span>
+      {job.error_text && <small className="error-text">{job.error_text}</small>}</>;
+  }
   return <div className="workspace">
     <aside><div className="wordmark">2D <span>→</span> 3D</div><p className="eyebrow">工作空间</p><div className="nav-item">◈ &nbsp; 图纸任务</div><div className="account"><span>{user.login}</span><button className="text-button" onClick={logout}>退出登录</button></div></aside>
     <main className="content"><header><div><p className="eyebrow">PROJECT / DRAWINGS</p><h1>图纸任务</h1><p className="muted">原图已接收后，后台会持续处理。你可以放心离开。</p></div><label className="project-select">当前项目<select value={projectId} disabled={busy} onChange={(e) => setProjectId(Number(e.target.value))}>{projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label></header>
@@ -136,10 +157,26 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
         {project?.role === 'reader' ? <p className="muted">当前账号可查看图纸与任务进度。</p> : <form onSubmit={upload}><label className="file-picker"><span className="upload-symbol">↑</span><strong>选择原始 PDF 文件</strong><span className="muted">支持一次选择多份图纸，逐份接收</span><input type="file" accept="application/pdf,.pdf" multiple disabled={busy || batchLoading || !projectId} onChange={(e) => setSelected(Array.from(e.target.files || []))} /></label><div className="upload-footer"><span className="muted">{selected.length ? `已选择 ${selected.length} 份图纸` : '等待选择文件'}</span><button disabled={busy || batchLoading || !projectId || !selected.length}>{busy ? '正在上传，请等待回执…' : '上传并开始处理'}</button></div></form>}
       </section>
       {notice && <p role="status" className="notice">{notice}</p>}{error && <p role="alert" className="error">{error}</p>}
-      <section className="card"><div className="section-title"><div><h2>处理进度</h2><p className="muted">{batchId ? `批次 #${batchId} · 自动更新` : '上传后查看接收结果和后台进度'}</p></div><span className="count">{batch?.files.length || 0} 份图纸</span></div>
-        {!batch?.files.length ? <div className="empty">本批次还没有图纸</div> : <div className="table-scroll"><table><thead><tr><th>图纸 / 内容指纹</th><th>任务</th><th>状态</th><th></th></tr></thead><tbody>{batch.files.map((file) => <tr key={file.id}><td><strong>{file.filename}</strong><small title={file.sha256}>{file.sha256.slice(0, 16)}…</small></td><td>#{file.task_id}</td><td><span className={`status ${file.state}`}>{states[file.state] || file.state}</span>{file.error_text && <small className="error-text">{file.error_text}</small>}</td><td><button className="text-button" onClick={() => api<Task>(`/tasks/${file.task_id}`).then(setDetail).catch(report)}>查看详情</button></td></tr>)}</tbody></table></div>}
+      <section className="card"><div className="section-title"><div><h2>处理进度</h2><p className="muted">{batchId ? `批次 #${batchId} · 自动更新` : '上传后查看接收结果和后台进度'}</p></div>
+        <div className="m2-actions"><span className="count">{batch?.files.length || 0} 份图纸 · {batch?.files.reduce((total, file) => total + file.products.length, 0) || 0} 个产品</span>
+          {canWrite && <button className="secondary" disabled={!jobs.some((job) => job.stage_state === 'failed')} onClick={() => void retry(`/batches/${batchId}/retry-failed`)}>只重试失败项</button>}</div></div>
+        {!batch?.files.length ? <div className="empty">本批次还没有图纸</div> : batch.files.map((file) => <section className="m2-file" key={file.id}>
+          <div className="m2-file-top"><div><strong>{file.filename}</strong><p className="muted">原图任务 #{file.task_id} · <code title={file.sha256}>{file.sha256.slice(0, 16)}…</code></p></div>
+            <div className="m2-actions">{status(file)}<button className="text-button" onClick={() => openTask(file.task_id)}>查看详情</button>
+              {canWrite && file.stage_state === 'failed' && <button className="text-button" onClick={() => void retry(`/tasks/${file.task_id}/retry`)}>重试此项</button>}</div></div>
+          {file.products.length > 0 && <div className="table-scroll"><table aria-label={`${file.filename} 产品`}><thead><tr><th>料号 / 版本</th><th>产品任务</th><th>状态</th><th>操作</th></tr></thead>
+            <tbody>{file.products.map((product) => <tr key={product.task_id}><td><strong>{product.part_number}</strong><small>{product.version || '等待冻结'}</small></td>
+              <td>#{product.task_id}</td><td>{status(product)}</td><td><button className="text-button" onClick={() => openTask(product.task_id)}>查看产品</button>
+                {canWrite && product.stage_state === 'failed' && <button className="text-button" onClick={() => void retry(`/tasks/${product.task_id}/retry`)}>重试此项</button>}</td></tr>)}</tbody></table></div>}
+        </section>)}
       </section>
-      {detail && <section className="card"><div className="section-title"><h2>任务 #{detail.id}</h2><button className="text-button" onClick={() => setDetail(null)}>收起</button></div><p>{states[detailState || detail.state]} · PDF 解析领取 {detail.attempts} 次</p>{detail.checkpoint && <><p>已解析 {detail.checkpoint.page_count} 页，原图与解析检查点已保存。</p>{detail.checkpoint.pages.map((page) => <details key={page.number}><summary>第 {page.number} 页 · 旋转 {page.rotation}° · 提取文本</summary><pre>{page.text || '此页没有可提取文字。'}</pre></details>)}{detail.sha256 === m1Source && <M1Evidence key={detail.id} taskId={detail.id} canWrite={Boolean(project && project.role !== 'reader')} />}</>}</section>}
+      {detail && <section className="card"><div className="section-title"><h2>任务 #{detail.id}</h2><button className="text-button" onClick={() => setDetail(null)}>收起</button></div>
+        <p>{detail.part_number && `${detail.part_number} · `}{states[detailState || detail.state]} · PDF 解析领取 {detail.attempts} 次</p>
+        {detail.workflow === 'm2' ? <M2Evidence key={detail.id} taskId={detail.id} canWrite={canWrite} /> : detail.checkpoint && <>
+          <p>已解析 {detail.checkpoint.page_count} 页，原图与解析检查点已保存。</p>
+          {detail.checkpoint.pages.map((page) => <details key={page.number}><summary>第 {page.number} 页 · 旋转 {page.rotation}° · 提取文本</summary><pre>{page.text || '此页没有可提取文字。'}</pre></details>)}
+          {detail.sha256 === m1Source && <M1Evidence key={detail.id} taskId={detail.id} canWrite={canWrite} />}</>}</section>}
+      {projectId > 0 && <Versions key={projectId} projectId={projectId} batchId={batchId} />}
     </main>
   </div>;
 }

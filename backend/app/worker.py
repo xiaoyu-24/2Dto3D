@@ -9,6 +9,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.db import engine, one
 from app.m1_read import read_stage, save_read
+from app.m2_work import fail_stage, run_stage as run_m2
 from app.pdf import extract_pdf
 from app.queue import claim, finish, renew
 
@@ -30,6 +31,12 @@ def process(stage):
     thread = threading.Thread(target=heartbeat, daemon=True)
     thread.start()
     try:
+        if stage["stage_name"] in ("m2_read", "m2_prepare"):
+            try:
+                return run_m2(stage)
+            except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as error:
+                logger.warning("M2 stage %s failed: %s", stage["id"], str(error)[:300])
+                return fail_stage(stage, str(error)[:1000])
         if stage["stage_name"] == "vision_read":
             try:
                 return read_stage(stage)

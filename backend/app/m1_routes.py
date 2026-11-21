@@ -8,6 +8,7 @@ from sqlalchemy import text
 from app.auth import current_user, require_member
 from app.db import engine, one
 from app.m1_acceptance import VERSION
+from app.m1_delivery import ARTIFACTS, delivery_metadata, filename, load_delivery
 from app.m1_read import call_summaries, current_basis, persist_basis
 from app.m1_sample import GENERATOR, SOURCE, annotate_reading, checked_blob
 from app.queue import event
@@ -17,12 +18,12 @@ User = Annotated[dict, Depends(current_user)]
 
 
 def task_scope(conn, task_id, user_id, write=False):
-    task = one(conn, """SELECT t.state, s.sha, b.project_id FROM product_task t
+    task = one(conn, """SELECT t.state, s.sha, b.project_id, s.selection_json FROM product_task t
         JOIN source_file s ON s.id=t.source_id JOIN upload_batch b ON b.id=s.batch_id WHERE t.id=:id""", id=task_id)
     if not task:
         raise HTTPException(404, "任务不存在")
     require_member(conn, task["project_id"], user_id, write=write)
-    if task["sha"].hex() != SOURCE:
+    if task["sha"].hex() != SOURCE or json.loads(task["selection_json"]).get("workflow") == "m2":
         raise HTTPException(404, "本次 M1 读图仅用于指定的四针样本")
     return task
 
@@ -85,12 +86,14 @@ def detail(task_id: int, user: User):
         stage = reading_stage(conn, task_id)
         evidence = saved_evidence(conn, stage)
         basis = current_basis(conn, stage["id"]) if stage else None
-        state = "basis_recheck" if task["state"] == "basis_frozen" and not basis else task["state"]
+        delivery = load_delivery(conn, task_id, basis) if stage and stage["state"] == "done" else None
+        state = "basis_recheck" if task["state"] in ("basis_frozen", "published") and not basis else task["state"]
         return {"state": state, "stage_id": stage["id"] if stage else None,
                 "error": stage["error_text"] if stage else None, "evidence": evidence,
                 "calls": call_summaries(conn, stage["id"]) if stage else [],
                 "frozen": {"version": VERSION, "basis_sha256": basis["basis_sha"].hex(),
-                           "checklist_sha256": basis["checklist_sha"].hex()} if basis else None}
+                           "checklist_sha256": basis["checklist_sha"].hex()} if basis else None,
+                "delivery": delivery_metadata(delivery) if delivery else None}
 
 
 @router.get("/images/{image_key}")
@@ -115,5 +118,21 @@ def frozen(task_id: int, kind: str, user: User):
             raise HTTPException(404, "冻结文件尚未生成")
         return Response(blob(conn, sha), media_type="application/json", headers={
             "Content-Disposition": f'attachment; filename="{VERSION.replace("/", "-")}-{kind}.json"',
+            "X-Content-SHA256": sha.hex(),
+        })
+
+
+@router.get("/delivery/{kind}")
+def delivered_file(task_id: int, kind: str, user: User):
+    with engine.connect() as conn:
+        task_scope(conn, task_id, user["id"])
+        stage = reading_stage(conn, task_id)
+        basis = current_basis(conn, stage["id"]) if stage and stage["state"] == "done" else None
+        delivery = load_delivery(conn, task_id, basis)
+        if not delivery or kind not in ARTIFACTS:
+            raise HTTPException(404, "交付文件尚未发布")
+        sha = delivery[f"{kind}_sha"]
+        return Response(blob(conn, sha), media_type=ARTIFACTS[kind][1], headers={
+            "Content-Disposition": f'attachment; filename="{filename(kind)}"',
             "X-Content-SHA256": sha.hex(),
         })

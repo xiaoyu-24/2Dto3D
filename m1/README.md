@@ -106,3 +106,63 @@ A 键轮廓、针心间距、O 形圈及台阶沿用原图估读和试建设定�
 | `D:/projects/2Dto3D/output/m1-step3-evidence/M12A04-03-301-M16-A0-M1.3-checklist.json` | `1ab1154c40edfc42494a1c5955924bfcca2b67c4bc721d2b0ef6f44e36c4e4ec` |
 
 第 4 步消费以上两个文件，由 Harness 调用模型选择或生成 CAD 作业，隔离执行器建模并从同一几何导出 STEP 和离线 HTML。第 3 步的测试验证读图、冻结和清单生成，STEP 实测和离线 HTML 验证属于第 4 步。
+
+## 第 4 步：M1 首件交付
+
+2026-11-21（北京时间），基线 `c815621`，接续任务 #2，发布版本 `M12A04-03-301-M16/A0/M1.3 / G1`。独立 Compose 项目为 `drawing-step4-qa`，工作台为 <http://127.0.0.1:8084>。`m1_delivery` 通过现有 `file_bytes` 持久化几何及三项交付，独立部件和变换可由冻结清单追溯。任务详情展示发布状态及下载链接。
+
+- 核对上节两份文件的 SHA-256、清单指向的建模依据、104,504 字节原图及 10 张原页/页区图。两个本地文件与 QA 工作台任务 #2 重新登录所得字节一致。
+- Harness SDK/Runtime `0.2.2rc2` 通过 `deepseek-flash` 选择 `m12-a04-m16-a0`。请求 `4dd9a0c0b1d21692c979cc4a4f15d816`，3,860 ms，416 / 8 token。第 3 步两条读图调用记录继续复用。
+- FreeCAD `1.1.4` / OCCT `7.8.1` 使用 M0 镜像 `3f38a3ed15f289551177a9a5540853932d6cedf631fd71e3ce690ead80429373`。建模及回读实测 UID 65534、仅 `lo`、根文件系统只读。导出进程重开已校验指纹的 BREP，按同一部件与展示变换清单生成 STEP 和 27,440 三角面的离线 HTML。冻结几何 SHA-256 为 `cee5658086f47e6a0de23a6cf98cfbb91201bdb4910de2e051f264b82ab38421`。
+- STEP 清单 15 项通过。沿配合端到焊线端为 +Z，分别确认正上方 A 键和安装扁面端，四针总长 24.70 mm，公差 ±0.25 mm。外壳长 21.00、六角前肩 10.00、针尖退距 2.20、密封台阶偏移 3.00、圆径 10.60 / 8.35、扁宽 13.40、针径 1.00、对边 18、螺母厚度 2.80 mm。实测螺距 1.00 / 1.50 / 1.50 mm。7 个本体实体与 1 个独立螺母实体均有效，D 安装位姿为 `null`。面板开孔另作参考。
+- Edge `157.0.4341.60` 使用 `msedge` 从 `file://` 打开。断网时读取实际绘制像素，确认模型可见、拖动旋转、滚轮放大、按钮缩小、两端视角切换及螺母/触点的显隐恢复。记录了 0 次 HTTP(S) 请求与 0 次页面脚本异常。
+
+### 发布和下载指纹
+
+MySQL `8.4.10` 于 12:26:24.219801 发布。单独从数据库执行 `OCTET_LENGTH(body)`、`SHA2(body, 256)`，核验冻结内容、产物字节和已有指纹。12:27:50 确认临时目录已清除，随后新 Edge 进程再次登录，并通过任务页的三个链接下载。下表为数据库与重新下载共同核验的结果。
+
+| `output/m1-step4/` 文件 | 字节数 | SHA-256 |
+|---|---:|---|
+| `M12A04-03-301-M16-A0-M1.3-G1.html` | 1,329,332 | `69440e5f1d28958c37938958de8bc78a24e140dee96ae68fc368ab04490b2740` |
+| `M12A04-03-301-M16-A0-M1.3-G1.step` | 1,013,783 | `5ade87ca1537c1eea21eda2c89c48710a0ef57d63886b0bb1ff6d04bec696403` |
+| `M12A04-03-301-M16-A0-M1.3-G1.md` | 7,236 | `ed07e47bc0cc2111ea2588bfc951605f11c1fa0f1e9afb36c92a029ffc1861c3` |
+
+冻结清单、选择记录、正负例实测、Edge 截图、发布回执、数据库字节清单及清理时间在 `output/m1-step4-evidence/`。
+
+### 实际命令与退出码
+
+以下 CAD 命令在仓库根目录运行。`$work` 当时为 `D:/projects/2Dto3D/output/m1-step4-work`，`$stem` 为 `M12A04-03-301-M16-A0-M1.3`。宿主创建工作目录，随后为导出和回读分别创建空的 `export`、`verify` 子目录。复跑可从保留的 `selection.json` 复用当前作业选择，指纹变化时重新运行 Harness。
+
+```powershell
+docker compose -f compose.m0.yaml run --rm --no-deps -T -v './m1/cad:/job:ro' -v './output/m1-step3-evidence:/evidence:ro' -v "${work}:/work" -w /job -e PYTHONPATH=/opt/probe vision-probe timeout 120 python /job/select_job.py "/evidence/$stem-basis.json" /work/selection.json
+
+docker compose -f compose.m0.yaml run --rm --no-deps -T -v './m1/cad:/job:ro' -v "./output/m1-step3-evidence/${stem}-basis.json:/basis.json:ro" -v "${work}:/work" -w /job cad timeout 240 sh -ec 'for variant in nominal swapped 26.70 26.90; do /opt/freecad/usr/bin/python job.py /basis.json /work/selection.json /work/$variant $variant; done'
+
+docker compose -f compose.m0.yaml run --rm --no-deps -T -v './m1/cad:/job:ro' -v "${work}:/freeze:ro" -v "${work}/export:/out" -w /job cad timeout 240 sh -ec 'for variant in nominal swapped 26.70 26.90; do /opt/freecad/usr/bin/python export.py /freeze/$variant /out/$variant.step $(if [ "$variant" = nominal ]; then echo /out/nominal.html; fi); done'
+
+docker compose -f compose.m0.yaml run --rm --no-deps -T -v './m1/cad:/job:ro' -v "./output/m1-step3-evidence/${stem}-checklist.json:/checklist.json:ro" -v "${work}:/evidence:ro" -v "${work}/verify:/out" -w /job cad timeout 240 sh -c 'for variant in nominal swapped 26.70 26.90; do /opt/freecad/usr/bin/python verify.py /evidence/export/$variant.step /checklist.json /evidence/$variant/geometry.json /out/$variant.json; code=$?; echo verifier:$variant:exit=$code; if [ "$variant" = nominal ]; then test "$code" = 0 || exit 1; else test "$code" = 1 && test -s "/out/$variant.json" || exit 1; fi; done'
+
+python m1/qa_browser.py offline output/m1-step4-work/export/nominal.html output/m1-step4-work/browser
+
+docker compose -p drawing-step4-qa run --rm --no-deps -T -v "${work}:/work:ro" -v './m1/cad:/job:ro' migrate python -m app.m1_delivery 2 /work /job
+
+python m1/qa_browser.py download http://127.0.0.1:8084 output/m1-step4 output/m1-step4-evidence/db-files.json .env
+```
+
+| 实际命令或检查 | 退出码 | 实测结果 |
+|---|---:|---|
+| `git status --short --branch`、`Get-FileHash -Algorithm SHA256 -LiteralPath ...`、`docker image inspect drawing-m0-cad drawing-m0-harness` | 0 | 基线和分支正确，初始工作区干净。输入和锁定镜像指纹吻合 |
+| `docker compose -f compose.m0.yaml config --quiet`、`select_job.py` | 0 | M0 Compose 配置有效，Harness 返回可执行的作业 ID |
+| FreeCAD `job.py`、`export.py` | 0 | 四组输入分别冻结和导出，正例另外导出 HTML。预跑发现长螺旋布尔缺牙，改用分段放样并重新读回检查 |
+| 独立 FreeCAD `verify.py` | 0 / 1 / 1 / 1 | 正例 15 项通过。端面对调由端面门禁识别，四针套用错长 26.70 / 26.90 mm 由总长门禁识别。早期回读曾因缺少导入与错识密封台阶退出 1。修正后重验通过 |
+| `python m1/qa_browser.py offline ...` | 0 | 最终 HTML 重新导出后按实际画面复测通过，最终 STEP 也独立重验 |
+| `docker compose -p drawing-step4-qa up -d mysql`、`docker compose -p drawing-step4-qa --progress plain build migrate api web`、`docker compose -p drawing-step4-qa run --rm --no-deps -T migrate alembic upgrade head` | 0 | 新卷、空库迁移、TypeScript/Vite 与后端镜像通过 |
+| 经 Python 管道执行 `docker compose -p drawing-step3-qa exec -T mysql` 的 `mysqldump --single-transaction --no-tablespaces --no-create-info --skip-add-locks --skip-disable-keys --hex-blob`，由 `docker compose -p drawing-step4-qa exec -T mysql` 导入 | 0 | 原任务 #2 与原图/证据一并复用。会话表未导入 |
+| `$env:WEB_PORT='8084'`，`docker compose -p drawing-step4-qa up -d --wait mysql api web`，Edge 登录检查 | 0 | 旧读图记录保留。第一次登录可下载两个冻结文件，发布前所有交付接口均为 404 |
+| 通过 `docker compose -p drawing-step4-qa run --rm --no-deps -T ... migrate python -` 注入 HTML 字节改变与发布末尾异常 | 0 | 两次均拒绝，任务和文件字节行数保持原状 |
+| `python -m app.m1_delivery 2 /work /job`（Compose 内执行两次） | 0 / 0 | 一条发布记录、一条发布事件，重试返回同一回执。库内原图、冻结输入、BREP 和三项成品均重算通过 |
+| `Remove-Item -LiteralPath 'D:\projects\2Dto3D\output\m1-step4-work' -Recurse`，`python m1/qa_browser.py download ...` | 0 / 0 | 首次复合清理命令由工具拒绝执行，核对绝对路径和目录内容后以字面路径清理。新客户端匿名请求 401，登录后下载三项文件，与数据库逐项匹配 |
+| `docker compose -p drawing-step4-qa -f compose.yaml -f compose.test.yaml run --rm -T tests`（`M12_PDF_PATH=D:/desktop/测试文件.pdf`） | 0 | 21 项现有测试通过，保留一条 Starlette 依赖弃用提示 |
+| `git diff --check` | 0 | 补丁空白检查通过 |
+
+验收范围限于这一型号和 G1。本次将螺纹牙型细节、端子和内腔过渡作为试建。未验证电气针号、O 形圈自由规格、螺母安装位置、旋合密封、量产适用性、生产部署及 M2/M3 流程。首件作业和发布由本地命令触发。
