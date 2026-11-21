@@ -14,7 +14,7 @@ def event(conn, stage, kind, detail):
 
 def claim(owner: str):
     with engine.begin() as conn:
-        found = one(conn, """SELECT * FROM task_stage WHERE stage_name='pdf_extract' AND
+        found = one(conn, """SELECT * FROM task_stage WHERE stage_name IN ('pdf_extract','vision_read') AND
             ((state='ready' AND ready_at<=UTC_TIMESTAMP(6)) OR
              (state='running' AND lease_until<=UTC_TIMESTAMP(6)))
             ORDER BY ready_at,id LIMIT 1 FOR UPDATE SKIP LOCKED""")
@@ -26,7 +26,8 @@ def claim(owner: str):
         conn.execute(text("""UPDATE task_stage SET state='running',owner=:owner,fence=:fence,
             lease_until=DATE_ADD(UTC_TIMESTAMP(6), INTERVAL 90 SECOND),attempts=attempts+1
             WHERE id=:id"""), stage)
-        conn.execute(text("UPDATE product_task SET state='processing' WHERE id=:id"), {"id": stage["task_id"]})
+        conn.execute(text("UPDATE product_task SET state=:state WHERE id=:id"),
+                     {"id": stage["task_id"], "state": "reading" if stage["stage_name"] == "vision_read" else "processing"})
         event(conn, stage, "reclaimed" if recovered else "started", {"owner": owner})
     return stage
 
@@ -39,12 +40,15 @@ def renew(stage):
             AND input_sha=:input_sha AND lease_until>UTC_TIMESTAMP(6)"""), stage).rowcount == 1
 
 
+def live_stage(conn, stage):
+    return one(conn, """SELECT id FROM task_stage WHERE id=:id AND state='running'
+        AND owner=:owner AND fence=:fence AND input_sha=:input_sha
+        AND lease_until>UTC_TIMESTAMP(6) FOR UPDATE""", **stage)
+
+
 def finish(stage, checkpoint=None, error=None):
     with engine.begin() as conn:
-        current = one(conn, """SELECT id FROM task_stage WHERE id=:id AND state='running'
-            AND owner=:owner AND fence=:fence AND input_sha=:input_sha
-            AND lease_until>UTC_TIMESTAMP(6) FOR UPDATE""", **stage)
-        if not current:
+        if not live_stage(conn, stage):
             return False
         output_sha = None
         if error is None:

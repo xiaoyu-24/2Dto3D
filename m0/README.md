@@ -29,7 +29,19 @@ docker compose -f compose.m0.yaml run --rm cad sh -ec "sed 's/Vector(7, 9, 0)/Ve
 
 本次联调解决了两个会影响正常运行的问题。Docker 的 tmpfs 默认 `noexec`，`dsh` 原生模块和图像解码库需要可执行缓存，因此给 Harness 单设进程私有的 `/run/dsh-native`，作业目录仍使用 `/tmp`。模拟端点对 `/v1/files` 返回 404，使 SDK 实际走内嵌 PNG 路径，随后两次 `/v1/messages` 分别完成技能调用和结果回传。
 
-真实模型识图能力待使用项目获准的端点、凭据和模型 ID 实测。读图路由启用前需通过随机图形、数字和方向题。当前记录覆盖环境与协议，M12 尺寸和针数的实测归入 M1。
+M0 的 `harness` 是断网回环探针。运行联网的合成图挑战前，在根目录 `.env` 设置 `DEEPSEEK_API_KEY` 和 `M1_VISION_BUDGET_CNY`，按获准预算填写。M1 固定使用获准的 DeepSeek Anthropic 端点 `https://api.deepseek.com/anthropic` 和 `deepseek-flash`。模型凭据只注入视觉容器。
+
+先在不联网的容器里检查随机图形生成，再运行一次合成图能力挑战：
+
+```powershell
+docker compose -f compose.m0.yaml build vision-probe
+docker compose -f compose.m0.yaml run --rm vision-probe python vision_probe.py --self-test
+docker compose -f compose.m0.yaml run --rm vision-probe
+```
+
+探针只发送一张合成 PNG，输出上限为 256 token。计数、数字和方向都正确且取得供应商请求 ID 时返回 `passed: true`。输出还包含实际模型、供应商响应 ID、耗时、用量和合成图 SHA-256。转发程序记录供应商响应头，SDK 和 Runtime 保持 M0 锁定版本。端点、凭据或预算不足时返回 `真实读图待联调`，退出码为 2。M1 的 Worker 会按项目和任务预算另执行一次有持久记录的能力题。
+
+该配置遵循 DeepSeek 当前的 [Anthropic-compatible API](https://api-docs.deepseek.com/guides/anthropic_api/) 和 [视觉输入说明](https://api-docs.deepseek.com/guides/vision/)；模型/接口以运行时的官方文档为准。当前 M0 记录只覆盖环境、协议与合成图能力探针；M12 尺寸和针数的实测归入 M1。
 
 ## 版本与许可
 

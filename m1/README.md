@@ -62,3 +62,47 @@
 - 新配置通过 `docker exec drawing-step2-qa-web-1 nginx -t`（退出码 `0`）。API 从 `172.22.0.3` 换到 `172.22.0.5` 后，网页 `/api/health` 从 API 启动算起约 2.4 秒恢复 `200`，Nginx 容器 ID 和启动时间一致。
 - Playwright Edge 登录、查看原批次的任务 #2 和读取 `/api/tasks/2/events?after=0` 均通过。后端 Compose 回归 `14 passed`（退出码 `0`），仍有一条 Starlette 弃用提示。
 - 最终配置的全量镜像重建因 Docker Hub 连接超时退出 `1`。回归使用已经构建的 Nginx 1.28.3 前端镜像，以只读挂载加载最终配置。
+
+## 第 3 步：M1 真实读图与证据确认
+
+2026-11-21 在独立 Compose 项目 `drawing-step3-qa` 接续项目 #1 的任务 #2。先从第 2 步 MySQL 导出原图与解析检查点，分别重算 SHA-256，再以同一任务号恢复到 QA。没有重新上传。工作台在 `http://127.0.0.1:8083`，登录后打开批次 #2 的任务详情。
+
+| 持久记录 | 值 |
+|---|---|
+| 原 PDF 104,504 字节 | `be06c0a72ba49f73275dcbe515893495b8baadfd1a1aa19579603e2be8a92d2c` |
+| 检查点 2,277 字节 | `73f381e1f0b51278a995fd12647da8759c768df3802b0aaf968845ed4f50ddb2` |
+| 第 1 页 | MediaBox/CropBox `[0, 0, 841.92, 595.32]` pt，旋转 0°，UserUnit 1，整页与 9 张局部图均入库 |
+| Worker | `vision_read` 阶段 #3，领取次数 1，fence 1，任务状态 `basis_frozen` |
+| 预算 | 用户确认可调用已配置的 DeepSeek。沿用任务上限 CNY 10 和项目日预算 CNY 500，可用 `M1_VISION_BUDGET_CNY` 设置更低的任务上限 |
+| 同阶段图片能力题 | `deepseek-flash`，`37d44e2f2b38987b0b53f3cb293a6ebd`，9,053 ms，625 输入 / 30 输出 token。随机答案 2 圆、2 方、2 三角、`961`、向左，与期望完全一致 |
+| 同阶段真实读图 | `deepseek-flash`，`435404b9b7452711a2dad8418f26bd50`，16,845 ms，5,064 输入 / 1,218 输出 token。完整第 1 页和所需局部图通过 M0 锁定的 Harness SDK/Runtime `0.2.2rc2` 发送 |
+| 读图与原图复核 | `M12A04-03-301-M16`、ENDE05 A0、4 针、24.70 mm。复核纠正焊线端 13.40 mm 的量测方向、24.70 mm 的通用公差以及 PG9 与 M16 的适用关系 |
+
+页区保存 PDF 左下原点坐标和 PNG 左上原点像素坐标，以及原图和裁图各自的指纹。开发机证据在 `D:/projects/2Dto3D/output/m1-step3-evidence/`，包括 `task2-deepseek-read.json`、`task2-read-audit.json`、`db-*.png` 和 Edge 截图。独立验收参考值与历史模型未拼入提示词。
+
+| 实际命令或检查 | 退出码 | 结果 |
+|---|---:|---|
+| `docker compose -f compose.m0.yaml run --rm vision-probe`，当时的初版探针 | 1 | 出参达到 128 token 上限，未能完整作答 |
+| `docker compose --ansi never -f compose.m0.yaml run --rm -T -v './m0/harness/m1_service.py:/opt/probe/m1_service.py:ro' vision-probe python -c …` | 0 | 修正后独立联网探针通过。请求 `2674c05f0603da3c1ae29cd15115b4f1`，3,553 ms，626 / 21 token |
+| `docker compose -f compose.m0.yaml build vision-probe`；`docker compose -f compose.m0.yaml run --rm -T vision-probe python vision_probe.py --self-test` | 均 0 | 镜像构建及随机 PNG 自检通过 |
+| `docker compose -f compose.m0.yaml run --rm -T -e DEEPSEEK_API_KEY= -e M1_VISION_BUDGET_CNY= vision-probe` | 2，预期 | 标记真实读图待联调 |
+| `docker compose -p drawing-step3-qa up -d --build mysql api worker` | 0 | 独立 MySQL、迁移、API、Worker、视觉容器启动 |
+| 原库导出脚本与 QA `docker compose -p drawing-step3-qa exec -T api python -c …` | 0 | 校验原文、检查点、恢复任务 #2，入队阶段 #3，读回供应商记录并导出图像 |
+| 设置 `$env:WEB_PORT='8083'` 后运行 `docker compose -p drawing-step3-qa up -d --build --no-deps api worker web` | 0 | API、Worker 和前端构建通过，保留已完成的阶段和证据 |
+| 设置 `$env:M12_PDF_PATH='D:/desktop/测试文件.pdf'` 后运行 `docker compose -p drawing-step3-qa -f compose.yaml -f compose.test.yaml run --rm -T tests` | 0 | 17 项通过。一条既有 Starlette `httpx` 弃用提示。两个错长都被挡在冻结之前。临时测试库验证 Worker 自动冻结、重试复用及两个文件的 SHA-256 |
+| PowerShell 将 Playwright Python 脚本传给 `python -`，`chromium.launch(channel='msedge', headless=True)` | 0 | Edge 157.0.4341.60。验证重新登录回显同一资料、选区切换、局部图哈希及 390 px 窄屏。之后复用任务 #2 的已完成读图生成 M1.2，下载两个冻结文件并复算哈希。前后同阶段供应商请求数均为 2 |
+| 同一测试命令附加 `python -m pytest -q -p no:cacheprovider tests/test_m1.py -k end_views`，修复前 | 1 | 正确视向通过，端面对调仍进入 `basis_frozen`，复现审核发现 |
+| 同一 Compose `run --rm -T tests`，修复后 | 0 | 21 项通过，既有 Starlette 弃用提示仍在。正确视向两个文件均返回 HTTP 200，端面对调、视向矛盾或缺失均返回 404。对调而误冻的 M1.2 经重验后仍不能下载 |
+| `docker compose -p drawing-step3-qa --progress plain up -d --build --no-deps api worker web` | 0 | 初次构建因 Docker Hub 连接超时退出 1，重试成功 |
+| PowerShell 将端面复验脚本传给 `python -`，使用 `chromium.launch(channel='msedge', headless=True)` | 0 | Edge 中任务 #2 复验前两个下载均为 404。复用存档读图后，两个 M1.3 下载均为 200，哈希与数据库一致。页区指纹一致，供应商请求数仍为 2 |
+
+任务 #2 已冻结版本 `M12A04-03-301-M16/A0/M1.3`。冻结前检查模型分别把带键配合端和焊线端对应到正确的原图页区。以配合端指向焊线端为 +Z，进入配合端的视线沿 +Z，进入焊线端的视线沿 −Z。冻结文件记录两条原始识别的标签和页区，验收清单按同一轴向要求独立回读 STEP。M1.2 保留为历史文件，下载接口仅提供重验通过的 M1.3。
+
+A 键轮廓、针心间距、O 形圈及台阶沿用原图估读和试建设定，环氧灌封记录在说明中。电气针号、O 形圈自由状态规格和独立螺母安装变换在图纸中未定。验收清单对试建项检查几何一致性，对图纸标注与有证据的推导检查原图符合性。
+
+| QA 下载文件 | SHA-256 |
+|---|---|
+| `D:/projects/2Dto3D/output/m1-step3-evidence/M12A04-03-301-M16-A0-M1.3-basis.json` | `2aca49563740fe8a90ae8418b3fd202d046a24911305948073dd8eb66a9946f0` |
+| `D:/projects/2Dto3D/output/m1-step3-evidence/M12A04-03-301-M16-A0-M1.3-checklist.json` | `1ab1154c40edfc42494a1c5955924bfcca2b67c4bc721d2b0ef6f44e36c4e4ec` |
+
+第 4 步消费以上两个文件，由 Harness 调用模型选择或生成 CAD 作业，隔离执行器建模并从同一几何导出 STEP 和离线 HTML。第 3 步的测试验证读图、冻结和清单生成，STEP 实测和离线 HTML 验证属于第 4 步。

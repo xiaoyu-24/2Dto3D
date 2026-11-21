@@ -66,5 +66,19 @@ details { margin-top: 16px; }
 summary { cursor: pointer; font-size: 13px; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.7; background: #f6f8f4; padding: 20px; max-height: 400px; overflow-y: auto; }
 footer { font-size: 12px; line-height: 1.7; color: #8a998d; padding: 8px 0 24px; }
+.m1 { border-top: 1px solid #e1e7e0; margin-top: 24px; padding-top: 24px; }
+.m1-fingerprint, .m1-frozen code { overflow-wrap: anywhere; }
+.m1-calls, .m1-images { margin-bottom: 20px; }
+.m1-regions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.m1-regions button { padding: 8px 12px; }
+.m1-regions button[aria-pressed=true] { color: white; background: #235b4b; }
+.m1-images { display: grid; grid-template-columns: 3fr 2fr; align-items: start; gap: 14px; }
+.m1-images figure { margin: 0; min-width: 0; }
+.m1-images img { display: block; width: 100%; height: auto; border: 1px solid #e1e7e0; }
+.m1-images figcaption { margin-top: 6px; color: #6e7d73; font-size: 12px; }
+.m1-sheet { position: relative; }
+.m1-rect { position: absolute; border: 2px solid #235b4b; background: #71bca52b; pointer-events: none; }
+.m1-frozen { margin-top: 16px; }
+@media (max-width: 760px) { .m1-images { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 900px) { aside { width: 170px; padding: 28px 18px; } .content { margin-left: 170px; width: calc(100% - 170px); padding: 30px 24px; } header { flex-direction: column; } .intro { padding: 40px; } .intro h1 { font-size: 48px; } }
 @media (max-width: 600px) { .login-shell { grid-template-columns: 1fr; } .intro { padding: 28px; gap: 30px; } .intro h1 { font-size: 40px; } .intro small { display: none; } .login-panel { padding: 36px 24px; } aside { position: static; width: 100%; padding: 20px; flex-direction: row; align-items: center; justify-content: space-between; } aside .wordmark { margin: 0; } aside > .eyebrow, .nav-item { display: none; } .account { margin: 0; gap: 0; align-items: flex-end; } .workspace { flex-direction: column; } .content { margin: 0; width: 100%; padding: 28px 16px; } .card { padding: 20px; } .upload-footer { align-items: stretch; flex-direction: column; } }

@@ -9,8 +9,10 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.auth import current_user, login_user, logout_user, require_member
 from app.db import engine, one, rows
 from app.ingest import MAX_PDF_BYTES, accept_file, create_batch
+from app.m1_routes import router as m1_router
 
 app = FastAPI(title="图纸任务平台")
+app.include_router(m1_router)
 User = Annotated[dict, Depends(current_user)]
 
 
@@ -99,7 +101,7 @@ def batch_detail(batch_id: int, user: User):
         files = rows(conn, """SELECT f.id,f.filename,LOWER(HEX(f.sha)) AS sha256,f.state AS receipt,
             t.id AS task_id,t.state,s.state AS stage_state,s.attempts,s.error_text
             FROM source_file f JOIN product_task t ON t.source_id=f.id
-            JOIN task_stage s ON s.task_id=t.id
+            JOIN task_stage s ON s.id=(SELECT MAX(id) FROM task_stage WHERE task_id=t.id)
             WHERE f.batch_id=:id ORDER BY f.id""", id=batch_id)
     return {**dict(batch), "files": files}
 
@@ -108,7 +110,7 @@ def authorized_task(conn, task_id: int, user_id: int):
     task = one(conn, """SELECT t.id,t.state,f.filename,b.project_id,s.id AS stage_id,s.state AS stage_state,
         s.attempts,s.error_text,LOWER(HEX(s.input_sha)) AS sha256,s.output_sha
         FROM product_task t JOIN source_file f ON f.id=t.source_id
-        JOIN upload_batch b ON b.id=f.batch_id JOIN task_stage s ON s.task_id=t.id
+        JOIN upload_batch b ON b.id=f.batch_id JOIN task_stage s ON s.task_id=t.id AND s.stage_name='pdf_extract'
         WHERE t.id=:id""", id=task_id)
     if not task:
         raise HTTPException(404, "任务不存在")
@@ -131,7 +133,8 @@ def task_detail(task_id: int, user: User):
 @app.get("/api/tasks/{task_id}/events")
 def task_events(task_id: int, user: User, after: Annotated[int, Query(ge=0)] = 0):
     with engine.connect() as conn:
-        task = authorized_task(conn, task_id, user["id"])
-        events = rows(conn, """SELECT id,kind,fence,detail,created_at FROM stage_event
-            WHERE stage_id=:stage AND id>:after ORDER BY id LIMIT 100""", stage=task["stage_id"], after=after)
+        authorized_task(conn, task_id, user["id"])
+        events = rows(conn, """SELECT e.id,e.kind,e.fence,e.detail,e.created_at,s.stage_name FROM stage_event e
+            JOIN task_stage s ON s.id=e.stage_id WHERE s.task_id=:task AND e.id>:after ORDER BY e.id LIMIT 100""",
+                      task=task_id, after=after)
     return [{**row, "detail": json.loads(row["detail"])} for row in events]

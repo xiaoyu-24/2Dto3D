@@ -41,9 +41,34 @@ services:
   worker:
     <<: *backend
     command: ["python", "-m", "app.worker"]
+    environment:
+      <<: *backend-env
+      M1_HARNESS_URL: http://vision:8011
+      M1_VISION_PROJECT_ID: ${M1_VISION_PROJECT_ID:-1}
+      M1_VISION_BUDGET_CNY: ${M1_VISION_BUDGET_CNY:-}
+    networks: [default, vision]
     depends_on:
       migrate: { condition: service_completed_successfully }
+      vision: { condition: service_started }
     restart: unless-stopped
+  vision:
+    build: ./m0/harness
+    platform: linux/amd64
+    command: ["python", "m1_service.py"]
+    networks: [vision]
+    read_only: true
+    init: true
+    environment:
+      HOME: /run/dsh-native
+      TMPDIR: /run/dsh-native
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com/anthropic}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-flash}
+    tmpfs:
+      - /tmp:mode=1777,size=256m
+      - /run/dsh-native:exec,uid=65534,gid=65534,mode=0700,size=256m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
   web:
     build: ./frontend
     ports: ["127.0.0.1:${WEB_PORT:-8080}:80"]
@@ -51,3 +76,5 @@ services:
     restart: unless-stopped
 volumes:
   mysql-data:
+networks:
+  vision:

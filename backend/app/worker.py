@@ -1,4 +1,5 @@
 import logging
+import subprocess
 import signal
 import socket
 import threading
@@ -7,6 +8,7 @@ import uuid
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.db import engine, one
+from app.m1_read import read_stage, save_read
 from app.pdf import extract_pdf
 from app.queue import claim, finish, renew
 
@@ -28,6 +30,12 @@ def process(stage):
     thread = threading.Thread(target=heartbeat, daemon=True)
     thread.start()
     try:
+        if stage["stage_name"] == "vision_read":
+            try:
+                return read_stage(stage)
+            except (ValueError, subprocess.SubprocessError) as error:
+                logger.warning("Evidence preparation failed for stage %s: %s", stage["id"], type(error).__name__)
+                return save_read(stage, {}, "read_pending", "原图指纹、解析检查点或页图渲染校验失败")
         with engine.connect() as conn:
             source = one(conn, "SELECT body FROM file_bytes WHERE sha=:sha", sha=stage["input_sha"])
         try:

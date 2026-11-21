@@ -1,6 +1,7 @@
 import { StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { api, ApiError } from './api';
+import { M1Evidence, m1States, m1Source } from './M1Evidence';
 import './style.css';
 
 type User = { id: number; login: string };
@@ -8,9 +9,9 @@ type Project = { id: number; name: string; role: string };
 type BatchRef = { id: number; created_at: string };
 type TaskFile = { id: number; task_id: number; filename: string; sha256: string; state: string; error_text: string | null };
 type Batch = { id: number; files: TaskFile[] };
-type Task = { id: number; state: string; attempts: number; checkpoint: { page_count: number; pages: { number: number; rotation: number; text: string }[] } | null };
+type Task = { id: number; sha256: string; state: string; attempts: number; checkpoint: { page_count: number; pages: { number: number; rotation: number; text: string }[] } | null };
 type Receipt = { task_id: number; reused: boolean; message: string };
-const states: Record<string, string> = { queued: '等待处理', processing: '正在解析', awaiting_read: '解析完成 · 待读图', failed: '解析失败' };
+const states: Record<string, string> = { queued: '等待处理', processing: '正在解析', failed: '解析失败', ...m1States };
 
 function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -53,6 +54,7 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [selected, setSelected] = useState<File[]>([]);
   const storageKey = `drawing-batch:${user.id}:${projectId}`;
   const project = projects.find((p) => p.id === projectId);
+  const detailState = batch?.files.find((file) => file.task_id === detail?.id)?.state || detail?.state;
   function report(e: unknown) {
     if (e instanceof ApiError && e.status === 401) onLogout();
     else setError((e as Error).message);
@@ -137,8 +139,7 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
       <section className="card"><div className="section-title"><div><h2>处理进度</h2><p className="muted">{batchId ? `批次 #${batchId} · 自动更新` : '上传后查看接收结果和后台进度'}</p></div><span className="count">{batch?.files.length || 0} 份图纸</span></div>
         {!batch?.files.length ? <div className="empty">本批次还没有图纸</div> : <div className="table-scroll"><table><thead><tr><th>图纸 / 内容指纹</th><th>任务</th><th>状态</th><th></th></tr></thead><tbody>{batch.files.map((file) => <tr key={file.id}><td><strong>{file.filename}</strong><small title={file.sha256}>{file.sha256.slice(0, 16)}…</small></td><td>#{file.task_id}</td><td><span className={`status ${file.state}`}>{states[file.state] || file.state}</span>{file.error_text && <small className="error-text">{file.error_text}</small>}</td><td><button className="text-button" onClick={() => api<Task>(`/tasks/${file.task_id}`).then(setDetail).catch(report)}>查看详情</button></td></tr>)}</tbody></table></div>}
       </section>
-      {detail && <section className="card"><div className="section-title"><h2>任务 #{detail.id}</h2><button className="text-button" onClick={() => setDetail(null)}>收起</button></div><p>{states[detail.state]} · 已领取 {detail.attempts} 次</p>{detail.checkpoint && <><p>已解析 {detail.checkpoint.page_count} 页，原图与解析结果已保存。下一步为图纸识读。</p>{detail.checkpoint.pages.map((page) => <details key={page.number}><summary>第 {page.number} 页 · 旋转 {page.rotation}° · 提取文本</summary><pre>{page.text || '此页没有可提取文字，后续需要图像识读。'}</pre></details>)}</>}</section>}
-      <footer>当前阶段：接收原图与 PDF 解析。图纸识读和三维建模将在后续阶段执行。</footer>
+      {detail && <section className="card"><div className="section-title"><h2>任务 #{detail.id}</h2><button className="text-button" onClick={() => setDetail(null)}>收起</button></div><p>{states[detailState || detail.state]} · PDF 解析领取 {detail.attempts} 次</p>{detail.checkpoint && <><p>已解析 {detail.checkpoint.page_count} 页，原图与解析检查点已保存。</p>{detail.checkpoint.pages.map((page) => <details key={page.number}><summary>第 {page.number} 页 · 旋转 {page.rotation}° · 提取文本</summary><pre>{page.text || '此页没有可提取文字。'}</pre></details>)}{detail.sha256 === m1Source && <M1Evidence key={detail.id} taskId={detail.id} canWrite={Boolean(project && project.role !== 'reader')} />}</>}</section>}
     </main>
   </div>;
 }

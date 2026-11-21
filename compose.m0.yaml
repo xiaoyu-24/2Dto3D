@@ -29,3 +29,28 @@ services:
     cpus: 2
     mem_limit: 2g
     pids_limit: 128
+  vision-probe:
+    image: drawing-m0-vision-probe
+    build: ./m0/harness
+    command: ["timeout", "90", "python", "vision_probe.py"]
+    platform: linux/amd64
+    user: '65534:65534'
+    read_only: true
+    network_mode: bridge
+    environment:
+      HOME: /run/dsh-native
+      TMPDIR: /run/dsh-native
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com/anthropic}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-flash}
+      M1_VISION_BUDGET_CNY: ${M1_VISION_BUDGET_CNY:-}
+    tmpfs:
+      - /tmp:mode=1777,size=256m
+      - /run/dsh-native:exec,uid=65534,gid=65534,mode=0700,size=256m
+    volumes:
+      - ./m0/harness/vision_probe.py:/opt/probe/vision_probe.py:ro
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: 2
+    mem_limit: 2g
+    pids_limit: 128
