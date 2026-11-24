@@ -9,6 +9,8 @@ services:
       M12_PDF: /fixtures/m12.pdf
     volumes:
       - ./backend:/app:ro
+      - ./m1:/workspace/m1:ro
+      - ./m2:/workspace/m2:ro
       - ${M12_PDF_PATH:?Set M12_PDF_PATH to the real M12 PDF}:/fixtures/m12.pdf:ro
     depends_on:
       mysql: { condition: service_healthy }

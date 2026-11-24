@@ -1,18 +1,19 @@
 import json
 import re
-from io import BytesIO
+from tempfile import SpooledTemporaryFile
 from typing import Annotated
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 from app.auth import current_user, require_member
 from app.db import engine, one, rows
+from app.file_stream import archive_chunks, blob_chunks
 from app.m1_delivery import ARTIFACTS
 from app.m1_sample import encode_json
-from app.m2_work import blob
 
 router = APIRouter(prefix="/api")
 User = Annotated[dict, Depends(current_user)]
@@ -104,14 +105,15 @@ def download(version_id: int, kind: str, user: User):
         info = metadata(version)["files"].get(kind)
         if not info:
             raise HTTPException(404, "该文件当前不可下载")
-        return Response(blob(conn, version[f"{kind}_sha"]), media_type=ARTIFACTS[kind][1], headers={
+        return StreamingResponse(blob_chunks(version[f"{kind}_sha"], info["byte_count"]), media_type=ARTIFACTS[kind][1], headers={
             **attachment(info["filename"]), "X-Content-SHA256": info["sha256"], "X-Delivery-State": version["state"],
+            "Content-Length": str(info["byte_count"]),
         })
 
 
 @router.post("/projects/{project_id}/zip")
 def package(project_id: int, data: ZipInput, user: User):
-    buffer = BytesIO()
+    buffer = SpooledTemporaryFile(max_size=1024 * 1024)
     manifest = []
     with engine.connect().execution_options(isolation_level="REPEATABLE READ") as conn, ZipFile(buffer, "w", ZIP_DEFLATED) as archive:
         require_member(conn, project_id, user["id"])
@@ -123,17 +125,17 @@ def package(project_id: int, data: ZipInput, user: User):
             for kind, artifact in entry["files"].items():
                 path = f"{row['id']}-{row['state']}/{artifact['filename']}"
                 artifact["path"] = path
-                body = blob(conn, row[f"{kind}_sha"])
-                if len(body) != artifact["byte_count"]:
-                    raise ValueError("交付文件字节数不匹配")
-                archive.writestr(path, body)
+                with archive.open(path, "w") as member:
+                    for chunk in blob_chunks(row[f"{kind}_sha"], artifact["byte_count"]):
+                        member.write(chunk)
             if entry["files"]:
                 manifest.append(entry)
         if not manifest:
             raise HTTPException(409, "所选版本没有可下载的文件")
         archive.writestr("manifest.json", encode_json({"project_id": project_id, "versions": [
             {**entry, "published_at": entry["published_at"].isoformat() + "Z" if entry["published_at"] else None} for entry in manifest]}))
-    return Response(buffer.getvalue(), media_type="application/zip", headers=attachment(f"project-{project_id}-deliveries.zip"))
+    return StreamingResponse(archive_chunks(buffer), media_type="application/zip",
+                             headers={**attachment(f"project-{project_id}-deliveries.zip"), "Content-Length": str(buffer.tell())})
 
 
 def register_first_delivery(conn, task_id):

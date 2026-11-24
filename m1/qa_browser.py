@@ -111,7 +111,7 @@ def download(browser, url, output, database, credentials_path):
     batches.select_option("2")
     page.get_by_role("button", name="查看详情").click()
     expect(page.get_by_role("heading", name="任务 #2")).to_be_visible()
-    expect(page.get_by_text(re.compile(r"已发布.*M1\.3.*G1"))).to_be_visible()
+    expect(page.locator(".m1-frozen").last.get_by_text(re.compile(r"已发布.*M1\.3.*G1"))).to_be_visible()
     assert "Edg/" in page.evaluate("navigator.userAgent")
     labels = {"html": "下载离线 3D HTML", "step": "下载 STEP", "report": "下载验收报告"}
     delivery = page.locator(".m1-frozen").last

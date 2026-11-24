@@ -44,6 +44,7 @@ services:
     environment:
       <<: *backend-env
       M1_HARNESS_URL: http://vision:8011
+      M3_BACKUP_HARNESS_URL: ${M3_BACKUP_HARNESS_URL:-}
       M1_VISION_PROJECT_ID: ${M1_VISION_PROJECT_ID:-1}
       M1_VISION_BUDGET_CNY: ${M1_VISION_BUDGET_CNY:-}
     networks: [default, vision]

@@ -10,10 +10,12 @@ from sqlalchemy import text
 
 from app.db import engine, one
 from app.ingest import put_bytes
-from app.m1_read import harness, recorded_call
+from app.m1_read import harness
+from app.m3_models import Deferred, call as recorded_call, defer
 from app.m1_sample import checked_blob, encode_json
 from app.m2_versions import passed_check
 from app.m2_work import blob, finish_stage
+from app.m3_revisions import next_revision, published_receipt
 from app.queue import claim, event, live_stage, renew
 
 JOB = "m12-a04-m16-a0"
@@ -171,6 +173,10 @@ def report(version, check):
 
 def store_step(stage, body, check):
     with engine.begin() as conn:
+        one(conn, "SELECT id FROM task_stage WHERE id=:id FOR UPDATE", id=stage["id"])
+        previous = published_receipt(conn, stage, bytes.fromhex(fingerprint(body)))
+        if previous:
+            return previous
         version = version_for(conn, stage)
         validate_identity(version, body, "step")
         checklist = json.loads(blob(conn, version["checklist_sha"]))
@@ -194,6 +200,12 @@ def store_step(stage, body, check):
         conn.execute(text("""UPDATE m2_version SET step_sha=:step,step_check=:check,report_sha=:report,state='published',
             published_at=UTC_TIMESTAMP(6) WHERE id=:id"""),
                      {"id": version["id"], "step": step, "check": verification, "report": report_sha})
+        conn.execute(text("""INSERT INTO m3_publication
+            (version_id,geometry_revision,stage_id,fence,geometry_sha,html_sha,step_sha,report_sha)
+            VALUES (:version,:revision,:stage,:fence,:geo,:html,:step,:report)"""),
+                     {"version": version["id"], "revision": version["geometry_revision"], "stage": stage["id"],
+                      "fence": stage["fence"], "geo": version["geometry_sha"], "html": version["html_sha"],
+                      "step": step, "report": report_sha})
         finish_stage(conn, stage, "done", "published", "published", {"geometry_sha256": check["geometry_sha256"],
                      "step_sha256": step.hex(), "html_sha256": version["html_sha"].hex(), "report_sha256": report_sha.hex()}, output=report_sha)
         return {"state": "published", "report_sha256": report_sha.hex()}
@@ -210,11 +222,16 @@ def fail(stage, reason):
 
 def execute(data):
     action = data["action"]
+    if action == "revision":
+        return next_revision(data["task_id"])
     if action == "claim":
         stage = claim(data["owner"], cad=True)
         return stage_wire(stage) if stage else None
     stage = data["stage"].copy()
     stage.update(owner=stage["owner"].encode(), input_sha=bytes.fromhex(stage["input_sha"]))
+    if action == "receipt":
+        with engine.begin() as conn:
+            return published_receipt(conn, stage, bytes.fromhex(data["step_sha256"]), require_fence=False)
     if action == "renew":
         return renew(stage)
     if action == "inputs":
@@ -234,7 +251,14 @@ def execute(data):
 
 if __name__ == "__main__":
     try:
-        print(json.dumps({"result": execute(json.load(sys.stdin))}, ensure_ascii=False))
+        data = json.load(sys.stdin)
+        print(json.dumps({"result": execute(data)}, ensure_ascii=False))
+    except Deferred as failure:
+        stage = data["stage"].copy()
+        stage.update(owner=stage["owner"].encode(), input_sha=bytes.fromhex(stage["input_sha"]))
+        defer(stage, failure)
+        print(json.dumps({"error": failure.reason}, ensure_ascii=False))
+        sys.exit(1)
     except ValueError as error:
         print(json.dumps({"error": str(error)}, ensure_ascii=False))
         sys.exit(1)

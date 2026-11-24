@@ -102,7 +102,11 @@ def sample_evidence(source, reading):
 
 def frozen_inputs(evidence, specification, version, answers):
     part = specification["part_number"]
-    if evidence["source_sha256"] != SOURCE or part not in (PART, FIVE_PIN):
+    equivalent = evidence.get("equivalent_read", {})
+    reviewed = evidence["source_sha256"] == SOURCE or (equivalent.get("peer_source_sha256") == SOURCE
+              and len(equivalent.get("page_identity", [])) == 1 and equivalent.get("peer_stage")
+              and evidence["model_run"].get("source_stage_id") == equivalent["peer_stage"])
+    if not reviewed or part not in (PART, FIVE_PIN):
         return None
     pins = 4 if part == PART else 5
     length = "24.70" if pins == 4 else "26.70"
@@ -142,4 +146,6 @@ def frozen_inputs(evidence, specification, version, answers):
              "drawing_no": "ENDE05", "revision": "A0", "pin_count": pins, "total_length_mm": length,
              "z_positive": "mating_to_terminal", "scope": checklist["scope"], "model_run": evidence["model_run"],
              "confirmations": answers, "checkpoint_sha256": evidence["checkpoint_sha256"]}
+    if equivalent:
+        basis["equivalent_read"] = equivalent
     return basis, checklist

@@ -3,9 +3,10 @@ import hashlib
 import http.client
 import json
 import os
+import re
 import secrets
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from tempfile import TemporaryDirectory
 from threading import Thread
 
@@ -54,6 +55,7 @@ def request_harness(prompt, images, phase):
                 })
                 response = connection.getresponse()
                 audit["http_status"] = response.status
+                audit["retry_after"] = response.getheader("Retry-After")
                 audit["request_id"] = next((response.getheader(header) for header in
                     ("request-id", "x-request-id", "x-ds-request-id", "ds-trace-id", "x-ds-trace-id")
                     if response.getheader(header)), None)
@@ -136,13 +138,20 @@ class Service(BaseHTTPRequestHandler):
             self.respond({}, 403)
             return
         if self.path == "/probe":
-            self.respond(run_probe())
+            result = run_probe()
         elif self.path in ("/read", "/cad_select"):
             request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            self.respond(request_harness(request["prompt"], request["images"], self.path[1:]))
+            result = request_harness(request["prompt"], request["images"], self.path[1:])
         else:
             self.respond({}, 404)
+            return
+        ledger_key = self.headers.get("X-Drawing-Call", "")
+        if re.fullmatch(rf"[1-9][0-9]{{0,19}}:{self.path[1:]}:[12]", ledger_key):
+            receipt = {key: result.get(key) for key in ("http_status", "request_id", "response_id", "actual_model",
+                                                        "finish_reason", "usage", "elapsed_ms")}
+            print(json.dumps({"ledger_key": ledger_key, "route_id": route["route_id"], **receipt}), flush=True)
+        self.respond(result)
 
 
 if __name__ == "__main__":
-    HTTPServer(("0.0.0.0", 8011), Service).serve_forever()
+    ThreadingHTTPServer(("0.0.0.0", 8011), Service).serve_forever()

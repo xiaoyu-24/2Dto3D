@@ -3,6 +3,9 @@ import json
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi.responses import StreamingResponse
+
+from app.file_stream import blob_chunks
 from sqlalchemy import text
 
 from app.auth import current_user, require_member
@@ -132,7 +135,9 @@ def delivered_file(task_id: int, kind: str, user: User):
         if not delivery or kind not in ARTIFACTS:
             raise HTTPException(404, "交付文件尚未发布")
         sha = delivery[f"{kind}_sha"]
-        return Response(blob(conn, sha), media_type=ARTIFACTS[kind][1], headers={
+        byte_count = one(conn, "SELECT byte_count FROM file_bytes WHERE sha=:sha", sha=sha)["byte_count"]
+        return StreamingResponse(blob_chunks(sha, byte_count), media_type=ARTIFACTS[kind][1], headers={
             "Content-Disposition": f'attachment; filename="{filename(kind)}"',
             "X-Content-SHA256": sha.hex(),
+            "Content-Length": str(byte_count),
         })

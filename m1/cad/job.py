@@ -127,7 +127,7 @@ def freeze(basis_path, selection_path, output, variant):
     for position, center in zip(positions, basis["trials"]["pins"]["values"]["centers_xy_mm"], strict=True):
         components.append(component(f"B-{position}", "B", f"触点 {position}", "黄铜镀金", "#d8a84a", [*center, 0]))
 
-    manifest = {"schema": "m1-geometry-v1", "geometry_revision": "G1", "version": basis["version"],
+    manifest = {"schema": "m1-geometry-v1", "geometry_revision": basis.get("geometry_revision", "G1"), "version": basis["version"],
                 "part_number": basis["part_number"], "drawing_no": basis["drawing_no"],
                 "drawing_revision": basis["revision"], "source_sha256": basis["source_sha256"],
                 "basis_sha256": basis_sha, "job_sha256": job_sha, "selection_sha256": sha256(selection_path),

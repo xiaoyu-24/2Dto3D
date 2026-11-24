@@ -1,0 +1,160 @@
+name: drawing-m4
+x-app: &app
+  image: drawing-m4-api:${M4_RELEASE:?Set M4_RELEASE}
+  platform: linux/amd64
+  user: "65534:65534"
+  read_only: true
+  init: true
+  tmpfs: ["/tmp:mode=1777,size=256m"]
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  environment: &app-env
+    DB_HOST: mysql
+    DB_NAME: drawings
+    DB_USER: drawings
+    DB_PASSWORD: ${MYSQL_PASSWORD:?Inject MYSQL_PASSWORD}
+    COOKIE_SECURE: "1"
+  networks: [database]
+x-cad: &cad
+  platform: linux/amd64
+  user: "65534:65534"
+  network_mode: none
+  read_only: true
+  init: true
+  tmpfs: ["/tmp:mode=1777,size=256m"]
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  cpus: 2
+  mem_limit: 2g
+  pids_limit: 128
+  profiles: [tools]
+services:
+  mysql:
+    image: sha256:d36d39a64cd12a5c1cc9e6aa2bfb5f8d4c81a2f6586e0a04a9ae13939db02209
+    pull_policy: never
+    command: ["--max-allowed-packet=256M", "--log-bin=binlog", "--binlog-format=ROW", "--sync-binlog=1",
+              "--innodb-flush-log-at-trx-commit=1", "--binlog-expire-logs-seconds=1209600",
+              "--server-id=${MYSQL_SERVER_ID:?Set unique MYSQL_SERVER_ID}", "--character-set-server=utf8mb4",
+              "--collation-server=utf8mb4_0900_ai_ci", "--default-time-zone=+00:00"]
+    environment:
+      MYSQL_DATABASE: drawings
+      MYSQL_USER: drawings
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Inject MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Inject MYSQL_ROOT_PASSWORD}
+    volumes: ["mysql-data:/var/lib/mysql"]
+    networks: [database]
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_ROOT_PASSWORD mysql -uroot --max-allowed-packet=256M -e 'SELECT 1'"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+    restart: unless-stopped
+  migrate:
+    <<: *app
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      mysql: {condition: service_healthy}
+  bootstrap:
+    <<: *app
+    command: ["python", "-m", "app.bootstrap"]
+    environment:
+      <<: *app-env
+      BOOTSTRAP_LOGIN: ${BOOTSTRAP_LOGIN:?Inject BOOTSTRAP_LOGIN}
+      BOOTSTRAP_PASSWORD: ${BOOTSTRAP_PASSWORD:?Inject BOOTSTRAP_PASSWORD}
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    profiles: [initialize]
+  api:
+    <<: *app
+    networks: [database, frontend]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health',timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    restart: unless-stopped
+  worker:
+    <<: *app
+    command: ["python", "-m", "app.worker"]
+    environment:
+      <<: *app-env
+      WORKER_HEARTBEAT: /tmp/worker-heartbeat
+      M1_HARNESS_URL: http://harness:8011
+      M3_BACKUP_HARNESS_URL: ${M3_BACKUP_HARNESS_URL:-}
+      M1_VISION_PROJECT_ID: ${M1_VISION_PROJECT_ID:-1}
+      M1_VISION_BUDGET_CNY: ${M1_VISION_BUDGET_CNY:-10}
+    networks: [database, model]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,time; assert time.time()-os.stat('/tmp/worker-heartbeat').st_mtime<60"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      harness: {condition: service_healthy}
+    restart: unless-stopped
+  harness:
+    image: drawing-m4-harness:${M4_RELEASE:?Set M4_RELEASE}
+    command: ["python", "m1_service.py"]
+    platform: linux/amd64
+    user: "65534:65534"
+    read_only: true
+    init: true
+    environment:
+      HOME: /run/dsh-native
+      TMPDIR: /run/dsh-native
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com/anthropic}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-flash}
+    tmpfs:
+      - /tmp:mode=1777,size=256m
+      - /run/dsh-native:exec,uid=65534,gid=65534,mode=0700,size=256m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [model, egress]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8011/route',timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+  web:
+    image: drawing-m4-web:${M4_RELEASE:?Set M4_RELEASE}
+    ports: ["${HTTPS_BIND:-0.0.0.0}:${HTTPS_PORT:-443}:443"]
+    volumes: ["${TLS_DIR:?Set TLS_DIR}:/run/tls:ro"]
+    networks: [frontend, ingress]
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-check-certificate -q -O /dev/null https://127.0.0.1/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    depends_on:
+      api: {condition: service_healthy}
+    restart: unless-stopped
+  cad:
+    <<: *cad
+    image: drawing-m4-cad:${M4_RELEASE:?Set M4_RELEASE}
+  step-check:
+    <<: *cad
+    image: drawing-m4-step-check:${M4_RELEASE:?Set M4_RELEASE}
+  html-check:
+    <<: *cad
+    image: drawing-m4-html-check:${M4_RELEASE:?Set M4_RELEASE}
+    tmpfs: ["/tmp:mode=1777,size=512m"]
+    shm_size: 256m
+    pids_limit: 256
+  mysql-tools:
+    <<: *cad
+    image: drawing-m4-mysql-tools:${M4_RELEASE:?Set M4_RELEASE}
+    user: "0:0"
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+volumes:
+  mysql-data:
+networks:
+  database: {internal: true}
+  frontend: {internal: true}
+  model: {internal: true}
+  ingress:
+  egress:

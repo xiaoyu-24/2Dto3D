@@ -1,0 +1,54 @@
+services:
+  harness:
+    image: ${M5_HARNESS_IMAGE:-drawing-m4-harness:8d513680bf86b647}
+  api:
+    image: ${M5_API_IMAGE:-drawing-m4-api:${M4_RELEASE}}
+    volumes: ["../m3:/qa:ro", "../m5:/m5:ro", "${M5_EVIDENCE:?Set M5_EVIDENCE}:/evidence"]
+    environment:
+      M3_QA: "1"
+      M5_QA: "1"
+    networks: [database, frontend, faults]
+  worker:
+    image: ${M5_API_IMAGE:-drawing-m4-api:${M4_RELEASE}}
+    command: ["python", "/m5/worker.py"]
+    volumes: ["../m3:/qa:ro", "../m5:/m5:ro", "${M5_EVIDENCE}:/evidence"]
+    environment:
+      M3_QA: "1"
+      M5_QA: "1"
+    networks: [database, model, faults]
+  simulator:
+    image: drawing-m4-api:${M4_RELEASE}
+    command: ["python", "/qa/model_service.py"]
+    user: "65534:65534"
+    read_only: true
+    volumes: ["../m3:/qa:ro"]
+    tmpfs: ["/tmp:mode=1777,size=32m"]
+    networks: [faults]
+  simulator-backup:
+    image: drawing-m4-api:${M4_RELEASE}
+    command: ["python", "/qa/model_service.py"]
+    environment:
+      M3_SIM_ROLE: backup
+    user: "65534:65534"
+    read_only: true
+    volumes: ["../m3:/qa:ro"]
+    tmpfs: ["/tmp:mode=1777,size=32m"]
+    networks: [faults]
+  interruption-simulator:
+    extends: simulator
+  cad-simulator:
+    extends: simulator
+  tests:
+    image: ${M5_API_IMAGE:-drawing-m4-api:${M4_RELEASE}}
+    command: ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
+    environment:
+      DB_HOST: mysql
+      DB_USER: root
+      DB_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      M12_PDF: /fixtures/m12.pdf
+      M3_SIM_URL: http://simulator:8011
+    volumes: ["${M5_EVIDENCE}/fixtures:/fixtures:ro", "../m1:/workspace/m1:ro", "../m2:/workspace/m2:ro"]
+    networks: [database, faults]
+    profiles: [tests]
+networks:
+  faults: {internal: true}

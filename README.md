@@ -45,6 +45,10 @@ python m2/cad_worker.py --project drawing-platform
 
 执行器领取同一 MySQL 队列，调用断网 FreeCAD，使用 Edge 独立检查 HTML，再提交几何指纹、验收和成品。保留该进程运行即可处理后续 CAD 任务。
 
+M3 沿用该队列和独立验收，增加持久化渠道退避／冷却、唯一发布回执和拒绝几何修订。可选的 `M3_BACKUP_HARNESS_URL` 指向已获准的独立备用 Harness，未设置时仍只使用现有渠道。备用在使用前必须通过图片能力题，并受原项目及任务预算限制。未知发送结果保留待对账，不自动重发。故障矩阵、真实联调边界与命令见 [M3 验收记录](m3/README.md)。
+
+CAD `--output` 目录现在包含发布前持久暂存，重启必须复用该目录；生产运行应放在持久磁盘或卷上。暂存按阶段、输入哈希和 fence 分目录，旧执行器不能覆盖新 fence 的记录；重送前以当前 fence 再暂存。`python m2/cad_worker.py --project drawing-platform --output <持久目录>` 启动时以 STEP 指纹查询数据库权威发布回执，兼容读取旧格式暂存，并在重领后直接重送已验收字节。几何被拒绝后，由信任的 CLI `app.m2_cad` 的 `revision` 动作为该任务创建新修订，三项交付均须重新验收；不开放网页绕过门禁。
+
 ## API
 
 请求采用同源 HttpOnly 会话 Cookie，8 小时过期。所有 POST 需要 `X-Requested-With: drawing-web`；服务不开放跨域写入。密码采用 Argon2id，数据库只存会话令牌 SHA-256。项目读写均检查成员权限，reader 只有查询权限。
@@ -85,5 +89,9 @@ docker compose -f compose.yaml -f compose.test.yaml run --rm tests
 Linux 对应先 `export M12_PDF_PATH=/absolute/path/to/m12.pdf`，再执行同一 Compose 测试命令。测试图指纹固定为 `be06c0a72ba49f73275dcbe515893495b8baadfd1a1aa19579603e2be8a92d2c`。
 
 实际命令、退出码与下载指纹见 [M1 验收记录](m1/README.md)。后端直接依赖见 `backend/requirements.txt`，实际已验证依赖冻结在 `backend/requirements.lock`；前端使用 `frontend/package-lock.json` 和 `npm ci`。测试依赖随本地联调镜像安装。
+
+M4 Linux 部署、HTTPS、独立 CAD/验收镜像和冷一致性快照恢复见 [部署说明](m4/README.md)，独立虚拟机、binlog、暂存续办和近 64 MiB 往返的实际结果见 [第 7 步验收记录](m4/ACCEPTANCE.md)。
+
+M5 独立 Linux 50 文件负载、故障演练、模型费用及盲测缺口见 [第 8 步验收记录](m5/README.md)。本轮未通过第 8 步：负载交付未完成，五类独立人工标注盲测缺失。Harness 已修复模型请求阻塞路由/健康查询的问题，原始失败和重试记录均保留。
 
 实现依据：[MySQL 锁定读取](https://dev.mysql.com/doc/refman/8.4/en/innodb-locking-reads.html)、[SQLAlchemy 事务上下文](https://docs.sqlalchemy.org/en/21/core/connections.html)、[pypdf 文本提取](https://github.com/py-pdf/pypdf/blob/main/docs/user/extract-text.md)。

@@ -12,13 +12,14 @@ def event(conn, stage, kind, detail):
         {"id": stage["id"], "fence": stage["fence"], "kind": kind, "detail": json.dumps(detail)})
 
 
-def claim(owner: str, *, cad=False):
+def claim(owner: str, *, cad=False, stage_id=None):
     stages = "'m2_cad'" if cad else "'pdf_extract','vision_read','m2_read','m2_prepare'"
     with engine.begin() as conn:
-        found = one(conn, f"""SELECT * FROM task_stage WHERE stage_name IN ({stages}) AND
+        target = "AND id=:stage_id" if stage_id is not None else ""
+        found = one(conn, f"""SELECT * FROM task_stage WHERE stage_name IN ({stages}) {target} AND
             ((state='ready' AND ready_at<=UTC_TIMESTAMP(6)) OR
              (state='running' AND lease_until<=UTC_TIMESTAMP(6)))
-            ORDER BY ready_at,id LIMIT 1 FOR UPDATE SKIP LOCKED""")
+            ORDER BY ready_at,id LIMIT 1 FOR UPDATE SKIP LOCKED""", stage_id=stage_id)
         if not found:
             return None
         stage = dict(found)

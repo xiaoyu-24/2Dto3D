@@ -12,7 +12,8 @@ def make_engine():
         database=os.environ.get("DB_NAME", "drawings"),
         query={"charset": "utf8mb4"},
     )
-    return create_engine(url, isolation_level="READ COMMITTED", pool_pre_ping=True)
+    return create_engine(url, isolation_level="READ COMMITTED", pool_pre_ping=True,
+                         connect_args={"max_allowed_packet": 256 * 1024 * 1024})
 
 
 engine = make_engine()

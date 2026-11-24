@@ -1,0 +1,17 @@
+[Unit]
+Description=Drawing platform isolated CAD dispatcher
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/drawing-platform
+ExecStart=/usr/bin/python3 -u /opt/drawing-platform/m4/executor.py --env /etc/drawing-platform/deploy.env
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=360
+KillMode=process
+UMask=0022
+
+[Install]
+WantedBy=multi-user.target

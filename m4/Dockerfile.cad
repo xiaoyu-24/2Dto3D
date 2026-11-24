@@ -1,0 +1,13 @@
+ARG CAD_BASE=drawing-m4-cad-base:1.1.4
+FROM ${CAD_BASE} AS cad
+ARG SOURCE_SHA
+LABEL org.opencontainers.image.revision=$SOURCE_SHA
+WORKDIR /job
+COPY m1/cad/job.py m1/cad/export.py m1/cad/common.py m1/cad/viewer.html ./
+ENTRYPOINT ["timeout", "240", "/opt/freecad/usr/bin/python"]
+FROM ${CAD_BASE} AS step-check
+ARG SOURCE_SHA
+LABEL org.opencontainers.image.revision=$SOURCE_SHA
+WORKDIR /job
+COPY m1/cad/verify.py m1/cad/common.py ./
+ENTRYPOINT ["timeout", "240", "/opt/freecad/usr/bin/python", "/job/verify.py"]

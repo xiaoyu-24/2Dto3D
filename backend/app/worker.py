@@ -1,19 +1,27 @@
 import logging
+import os
 import subprocess
 import signal
 import socket
 import threading
 import uuid
+from pathlib import Path
 
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.db import engine, one
 from app.m1_read import read_stage, save_read
 from app.m2_work import fail_stage, run_stage as run_m2
+from app.m3_models import Deferred, defer
 from app.pdf import extract_pdf
 from app.queue import claim, finish, renew
 
 logger = logging.getLogger("worker")
+
+
+def health_ping():
+    if path := os.environ.get("WORKER_HEARTBEAT"):
+        Path(path).touch()
 
 
 def process(stage):
@@ -22,6 +30,7 @@ def process(stage):
     def heartbeat():
         while not stopped.wait(20):
             try:
+                health_ping()
                 if not renew(stage):
                     return
             except SQLAlchemyError:
@@ -34,12 +43,16 @@ def process(stage):
         if stage["stage_name"] in ("m2_read", "m2_prepare"):
             try:
                 return run_m2(stage)
+            except Deferred as failure:
+                return defer(stage, failure)
             except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as error:
                 logger.warning("M2 stage %s failed: %s", stage["id"], str(error)[:300])
                 return fail_stage(stage, str(error)[:1000])
         if stage["stage_name"] == "vision_read":
             try:
                 return read_stage(stage)
+            except Deferred as failure:
+                return defer(stage, failure)
             except (ValueError, subprocess.SubprocessError) as error:
                 logger.warning("Evidence preparation failed for stage %s: %s", stage["id"], type(error).__name__)
                 return save_read(stage, {}, "read_pending", "原图指纹、解析检查点或页图渲染校验失败")
@@ -65,6 +78,7 @@ def main():
     logger.info("Worker started: %s", owner)
     while not stopped.is_set():
         try:
+            health_ping()
             stage = claim(owner)
             if stage:
                 logger.info("Claimed stage=%s task=%s fence=%s", stage["id"], stage["task_id"], stage["fence"])

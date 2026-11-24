@@ -2,7 +2,7 @@ import base64
 import json
 import os
 from decimal import Decimal, InvalidOperation, ROUND_UP
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from pydantic import BaseModel, Field, ValidationError
@@ -67,15 +67,61 @@ def validate_reading(response, evidence):
     return result
 
 
+def discover_routes():
+    discovered, failures = [], []
+    for role, variable in (("primary", "M1_HARNESS_URL"), ("backup", "M3_BACKUP_HARNESS_URL")):
+        url = os.environ.get(variable, "").rstrip("/")
+        if not url:
+            failures.append({"role": role, "reason": "not_configured"})
+            continue
+        try:
+            with urlopen(url + "/route", timeout=3) as response:
+                result = json.load(response)
+            candidate = result.get("route") if isinstance(result, dict) else None
+            if not isinstance(candidate, dict) or not candidate.get("route_id"):
+                failures.append({"role": role, "reason": "empty_route"})
+                continue
+        except HTTPError as error:
+            failures.append({"role": role, "reason": f"http_{error.code}"})
+            continue
+        except (OSError, ValueError) as error:
+            failures.append({"role": role, "reason": type(error).__name__})
+            continue
+        candidate = {**candidate, "harness_url": url}
+        candidate["alternates"] = [{**alternate, "harness_url": alternate.get("harness_url") or url}
+                                   for alternate in candidate.get("alternates", [])]
+        if role == "backup" and not discovered:
+            candidate["discovery_fallback"] = failures[0]["reason"]
+        discovered.append(candidate)
+    if not discovered:
+        return {"route": None, "discovery_failures": failures}
+    selected = discovered[0]
+    if len(discovered) == 2 and discovered[1]["route_id"] != selected["route_id"]:
+        selected["alternates"] = [discovered[1]]
+    return {"route": selected, "discovery_failures": failures}
+
+
 def harness(path, route=None, payload=None):
-    url = os.environ.get("M1_HARNESS_URL")
+    if path == "/route":
+        return discover_routes()
+    url = route.get("harness_url") if route else None
+    url = url or os.environ.get("M1_HARNESS_URL")
     if not url:
         return {}
     request = Request(url + path, data=None if payload is None else encode_json(payload), headers={
         "Content-Type": "application/json", "X-M1-Route": route["route_id"] if route else "",
     })
-    with urlopen(request, timeout=125 if payload is not None else 3) as response:
-        return json.load(response)
+    if route and route.get("ledger_key"):
+        request.add_header("X-Drawing-Call", route["ledger_key"])
+    try:
+        with urlopen(request, timeout=180 if payload is not None else 3) as response:
+            result = json.load(response)
+        return result
+    except HTTPError as error:
+        if error.code not in (401, 403, 429, 503):
+            raise
+        return {"http_status": error.code, "request_id": error.headers.get("x-request-id"),
+                "retry_after": error.headers.get("Retry-After"), "usage": {}, "error_type": f"http_{error.code}"}
 
 
 def current_basis(conn, stage_id):
@@ -148,14 +194,16 @@ def recorded_call(stage, project_id, route, phase, payload, *, attempt=1):
         if previous:
             return json.loads(previous["result"]) if previous["result"] is not None else {"error_type": "reconciliation_pending"}
         if phase in ("read", "cad_select"):
-            previous_phase = one(conn, "SELECT stage_id FROM m1_call WHERE stage_id=:stage AND phase=:phase AND attempt=:attempt LIMIT 1", **key)
-            if previous_phase:
+            previous_phase = rows(conn, "SELECT result FROM m1_call WHERE stage_id=:stage AND phase=:phase AND route_sha<>:route", **key)
+            if any(not item["result"] or json.loads(item["result"]).get("http_status") not in (401, 403, 429, 503)
+                   for item in previous_phase):
                 return {"error_type": "reconciliation_pending"}
         if attempt == 2:
             first = one(conn, "SELECT result FROM m1_call WHERE stage_id=:stage AND route_sha=:route AND phase=:phase AND attempt=1", **key)
             audited = json.loads(first["result"]) if first and first["result"] else {}
-            if (not audited.get("request_id") or audited.get("http_status") != 200
-                    or audited.get("finish_reason") not in ("completed", "max-tokens")):
+            if (audited.get("http_status") not in (429, 503) and
+                    (not audited.get("request_id") or audited.get("http_status") != 200
+                     or audited.get("finish_reason") not in ("completed", "max-tokens"))):
                 return {"error_type": "reconciliation_pending"}
         project = one(conn, "SELECT daily_budget_cny FROM project WHERE id=:id FOR UPDATE", id=project_id)
         task = one(conn, "SELECT budget_cny FROM product_task WHERE id=:id", id=stage["task_id"])
@@ -179,23 +227,27 @@ def recorded_call(stage, project_id, route, phase, payload, *, attempt=1):
             VALUES (:stage,:project,:route,:phase,:attempt,:reserve)"""), {**key, "project": project_id, "reserve": reserve})
 
     try:
-        result = harness("/" + phase, route, payload)
-    except (URLError, TimeoutError, ValueError):
+        result = harness("/" + phase, {**route, "ledger_key": f"{stage['id']}:{phase}:{attempt}"}, payload)
+    except (OSError, ValueError):
         return {"error_type": "reconciliation_pending"}
     usage = result.get("usage", {})
-    cost = None
+    if result.get("http_status") is None:
+        result["error_type"] = "reconciliation_pending"
+    cost = Decimal(0) if result.get("http_status") in (401, 403, 429, 503) else None
     if result.get("http_status") == 200 and result.get("request_id") and "output_tokens" in usage:
         inputs = sum(usage.get(key, 0) for key in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
         cost = (Decimal(2 * inputs + 8 * usage["output_tokens"]) / 1_000_000).quantize(Decimal("0.0001"), ROUND_UP)
     result["usage_ceiling_cny"] = str(cost) if cost is not None else None
     with engine.begin() as conn:
-        conn.execute(text("""UPDATE m1_call SET result=:result,usage_ceiling_cny=:cost
+        conn.execute(text("""UPDATE m1_call SET result=:result,usage_ceiling_cny=:cost,finished_at=UTC_TIMESTAMP(6)
             WHERE stage_id=:stage AND route_sha=:route AND phase=:phase AND attempt=:attempt AND result IS NULL"""),
                      {**key, "result": encode_json(result).decode(), "cost": cost})
     return result
 
 
 def read_stage(stage):
+    from app.m3_models import call as routed_call
+
     with engine.connect() as conn:
         inputs = one(conn, """SELECT f.sha, f.body AS source,cp.body AS checkpoint,b.project_id,
             saved.body AS previous FROM product_task t JOIN source_file s ON s.id=t.source_id
@@ -224,10 +276,10 @@ def read_stage(stage):
     approved = os.environ.get("M1_VISION_PROJECT_ID", "1")
     if not route or str(inputs["project_id"]) != approved:
         return save_read(stage, evidence, "read_pending", "当前项目的视觉端点或凭据尚未就绪")
-    probe = recorded_call(stage, inputs["project_id"], route, "probe", {})
+    probe = routed_call(stage, inputs["project_id"], route, "probe", {})
     if not probe.get("passed") or not probe.get("request_id"):
         return save_read(stage, evidence, "read_pending", "真实读图待联调：图像能力题未通过或请求待对账")
-    result = recorded_call(stage, inputs["project_id"], route, "read", model_input(evidence, images))
+    result = routed_call(stage, inputs["project_id"], route, "read", model_input(evidence, images))
     if result.get("finish_reason") != "completed" or not result.get("response") or not result.get("request_id"):
         return save_read(stage, evidence, "read_pending", "真实读图待联调：页图请求未完成或待对账")
     try:

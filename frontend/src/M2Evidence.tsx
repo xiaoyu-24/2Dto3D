@@ -6,6 +6,7 @@ export const m2States: Record<string, string> = {
   selection_ready: '联合读图完成 · 可选型号', needs_confirmation: '待确认', basis_pending: '等待建模作业',
   cad_queued: '等待隔离建模', modeling: '正在建模或验收', building: '准备交付', failed: '处理失败',
   partial: '部分完成', published: '已发布', geometry_rejected: '几何验收未通过', rejected: '几何验收未通过',
+  retry_wait: '等待渠道重试',
 };
 
 type Frame = { number: number; rotation: number; width: number; height: number; image_key: string };

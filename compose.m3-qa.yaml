@@ -1,0 +1,27 @@
+services:
+  api:
+    volumes: ["./backend:/app:ro", "./m3:/qa:ro"]
+    environment:
+      M3_QA: "1"
+  worker:
+    volumes: ["./backend:/app:ro", "./m3:/qa:ro"]
+    environment:
+      M3_QA: "1"
+  migrate:
+    volumes: ["./backend:/app:ro"]
+  simulator:
+    image: drawing-platform-api:latest
+    command: ["python", "/qa/model_service.py"]
+    volumes: ["./m3:/qa:ro"]
+    networks: [default, vision]
+    read_only: true
+    init: true
+  simulator-backup:
+    image: drawing-platform-api:latest
+    command: ["python", "/qa/model_service.py"]
+    environment:
+      M3_SIM_ROLE: backup
+    volumes: ["./m3:/qa:ro"]
+    networks: [default, vision]
+    read_only: true
+    init: true

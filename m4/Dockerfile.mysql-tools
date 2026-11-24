@@ -1,0 +1,12 @@
+FROM python:3.13-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72 AS extract
+RUN sed -i 's|http://deb.debian.org/debian-security|https://snapshot.debian.org/archive/debian-security/20261119T000000Z|; s|http://deb.debian.org/debian|https://snapshot.debian.org/archive/debian/20261119T000000Z|' /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::Check-Valid-Until=false update && apt-get install -y --no-install-recommends rpm2cpio cpio
+ADD --checksum=sha256:6b4ab8b6f711a0f8460a411049ee7418c214aaa5bf64014c08e256db65ade69b https://repo.mysql.com/yum/mysql-8.4-community/el/9/x86_64/mysql-community-client-8.4.10-1.el9.x86_64.rpm /tmp/client.rpm
+WORKDIR /extract
+RUN rpm2cpio /tmp/client.rpm | cpio -id ./usr/bin/mysqlbinlog
+FROM mysql:8.4@sha256:d36d39a64cd12a5c1cc9e6aa2bfb5f8d4c81a2f6586e0a04a9ae13939db02209
+ARG SOURCE_SHA
+LABEL org.opencontainers.image.revision=$SOURCE_SHA
+COPY --from=extract /extract/usr/bin/mysqlbinlog /usr/bin/mysqlbinlog
+USER 65534:65534
+ENTRYPOINT ["mysqlbinlog"]

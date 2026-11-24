@@ -1,0 +1,4 @@
+FROM drawing-m4-harness:8d513680bf86b647
+ARG SOURCE_SHA
+LABEL org.opencontainers.image.revision=$SOURCE_SHA
+COPY m0/harness/m1_service.py /opt/probe/m1_service.py
